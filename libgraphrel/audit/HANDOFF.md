@@ -298,7 +298,7 @@ Each entry has the same shape: **Seen**, **How found**, **Root cause**, **Option
   **not yet run on GitHub**.
 - **Commit.** `542bf11`.
 
-### 3.15 Analysis findings without code changes (yet)
+### 3.15 Analysis findings
 
 - **Peak layer size vs Wu & Sun's Table 2.** Every R we could reproduce matches the paper exactly,
   but the library kept more states per layer.
@@ -308,7 +308,75 @@ Each entry has the same shape: **Seen**, **How found**, **Root cause**, **Option
     row along the short side (Carlier & Lucet's street-network numbering) gives N20 65,858 states
     (1.22× the paper) against 387,481 (7.2×) with BFS.
   - The maximum boundary size can't tell them apart: it is 11 for both.
-  - Next step: §5.
+  - This led to 3.16.
+
+### 3.16 Cut-width ordering, now the default
+
+- **Seen.** Orderings with the same largest boundary size (F_max) gave very different state counts
+  (N20: 387,481 with BFS vs 65,858 with a row sweep; both F_max = 11). Exposing a mesh-only "row
+  sweep" wouldn't help general graphs.
+- **Hypothesis (from inspecting states).**
+  - In a row sweep each boundary vertex has **one** unprocessed edge. A non-terminal component
+    that touches the boundary once is then a dead end, and the existing pruning removes it, so
+    states merge.
+  - In BFS's diagonal sweep each boundary vertex has **two** unprocessed edges, so nothing is pruned.
+  - So the quantity that matters should be the **edge cut**: the number of unprocessed edges
+    leaving the processed part. That's 11 for the row sweep and 18 for BFS on 10×10.
+- **How it was tested** (`ordering_lab.cpp`).
+  - For BFS, DFS and several greedy variants, compute the cheap metrics (largest boundary,
+    largest cut, total cut) and the exact LBL peak layer size and total work.
+  - Cases: 12 meshes and 12 random geometric graphs, with perfect vertices and with p = 0.9.
+  - Each LBL run is a separate process with time and memory limits, so a blow-up gets recorded
+    instead of killing the experiment.
+- **Heuristic.**
+  - Greedy: repeatedly take the reached vertex that grows the cut least (deg − 2·processed
+    neighbours), preferring the most recently touched vertex (continue the current line).
+  - The free greedy can sweep along the *long* side of a rectangle, which is catastrophic (4×12:
+    705,376 states). So it also runs forced through each neighbour of the seed (up to 16).
+  - Plain BFS is always a candidate too.
+  - Pick the smallest (largest cut, largest boundary, total cut). The boundary tie-break matters:
+    on 8×8 two candidates tie on cut but differ 2× in states.
+- **Options for the default.**
+  1. Keep BFS.
+  2. Make cutwidth the default.
+  3. Choose per graph.
+  4. Race candidates with real LBL runs.
+- **Decision.** Option 2. `calculate_reliability`, `calculate_reliability_bounds` and
+  `build_diagram` use `ordering_strategy::cutwidth`. `generate_variable_ordering(g)` stays BFS for
+  compatibility, and BFS can be passed explicitly to reproduce Wu & Sun's setup. Why:
+  - The risk is lopsided. BFS's losses reach 24–96× or run out of memory; cutwidth's worst
+    measured loss is 2.2×.
+  - Answers are exact either way.
+  - Racing (option 4) would at least double the cost of every call.
+- **Result.** Exact LBL, all edges 0.9:
+
+  | Graph | Vertices 0.9: BFS | Vertices 0.9: cutwidth | Perfect vertices: BFS work | Perfect vertices: cutwidth work |
+  |---|---|---|---|---|
+  | 10×10 mesh (N20) | 387,481 states, 145 s | 65,858, 63 s | | |
+  | 8×8 mesh | 19,884, 3.7 s | 5,434, 2.0 s | 184,748 (0.7 s) | 406,609 (1.2 s) — **worse** |
+  | 7×7 mesh | 4,578 | 1,595 | 45,775 | 87,618 — **worse** |
+  | 6×10 mesh | 4,582 | 891 | 69,453 | 41,158 |
+  | geo40_1 | 162,075, 8.5 s | 1,683, 0.11 s | 450,595 | 19,296 |
+  | geo40_2 | out of memory (> 6 GB) | 8,758, 0.5 s | timeout | 74,926 |
+  | geo40_3 | out of memory | 70,342, 6.4 s | out of memory | 419,662 |
+  | geo40_4 | 329,038, 32 s | 478,760, 45 s — **worse** | 1,712,364 | 2,695,487 — **worse** |
+  | geo40_6 | 661,287, 36 s | 182,910, 7.4 s | 1,040,216 | 643,195 |
+  | geo60_1 | 1,329,800, 125 s | 54,528, 8.4 s | | |
+  | geo60_2 | 2,399,606, 294 s | 908,647, 129 s | | |
+
+  On the other cases measured, cutwidth was equal or better.
+
+  - BDD node counts: 7×7 with vertices at 0.9 goes from 108,702 to 76,522; the 2×500 ladder from
+    5,486 to 3,492; but 8×8 with perfect vertices goes from 84,885 to 180,574.
+  - The guard test checks that cutwidth halves G^max on 7×7 and sweeps a 4×12 mesh along its
+    short side. Fuzzing now covers BFS explicitly, since it's no longer the default.
+- **Known weak spot.** Square meshes with perfect vertices: the peak is the same, but the row sweep
+  holds it for more layers, so total work is up to 2.2× higher. The cut proxy doesn't see layer
+  *duration*. See §7.
+- **Commit.** `f4c3dc1`.
+- **Lesson 10.** A proxy metric must be validated across regimes. The cut proxy is excellent with
+  imperfect vertices and weaker with perfect ones. We only found that by measuring total work as
+  well as the peak.
 - **Imai Theorem 1 gap.** Imai's theorem identifies two minors by their partition *and* the same
   remaining edge set. The library's key leaves out the edge set. Fuzzing found no counterexample,
   but nothing proves it safe. Open.
@@ -343,6 +411,8 @@ The CI test runs 1,500 graphs per mode, with DFS and random orderings as well.
 | N20 (10×10, p = 0.9), exact LBL | — | 140 s, 1.0 GB (paper: 42.9 s) |
 | K₁₂, exact LBL | 104 s | 75.5 s, 1.2 GB |
 | K₁₂, `calculate_reliability_bounds(1e-15)` | — | 1.9 s, interval width < 1e-9 |
+| N20, default ordering (cutwidth, `f4c3dc1`) | 387,481 states, 145 s (BFS) | 65,858 states, 63 s |
+| geo40_1 (random geometric, 40 vertices) | 162,075 states, 8.5 s (BFS) | 1,683 states, 0.11 s |
 
 ### Reproducing Wu & Sun Table 2
 
@@ -379,6 +449,9 @@ R matches exactly for the bridge, N6, N7, N8, N9, N20 and N27. These are pinned 
 9. **Keep mistakes in the record.** The first audit headline ("BDD wrong on 10 % of graphs")
    mostly counted inputs outside both methods' scope, and the K₁₂ statement was wrong. Both are
    corrected in the report rather than silently edited.
+10. **Validate a proxy metric across regimes.** See 3.16: the edge cut predicts state counts well
+    with imperfect vertices and less well with perfect ones. Measuring total work as well as the
+    peak exposed this.
 
 ---
 
@@ -411,9 +484,12 @@ PAPER=1 ./fuzz 10000
 | `paper.cpp` | Wu & Sun Table 2 networks: R, peak layer size, boundary size, time, memory |
 | `order_sens.cpp` | How BFS/DFS tie-breaking affects the peak layer size |
 | `sweep.cpp` | BFS vs row sweep; `sweep numbering` checks Carlier & Lucet Algorithm 2 exhaustively |
+| `ordering_lab.cpp` | Ordering candidates: cheap metrics (cut, boundary) vs exact peak layer size and total work; `LAB_PV` sets vertex probability |
 
 Note: `probe.cpp`, `order_sens.cpp` and `paper.cpp` were written against the original API. Some
-of their inputs (unsorted terminals, invalid orderings) are now rejected by design.
+of their inputs (unsorted terminals, invalid orderings) are now rejected by design. Since
+`f4c3dc1`, `lbl_calculator(g)` uses the cutwidth ordering, so `paper.cpp` reports cutwidth state
+counts. The BFS figures in this log came from BFS orderings.
 
 ---
 
@@ -421,7 +497,11 @@ of their inputs (unsorted terminals, invalid orderings) are now rejected by desi
 
 In recommended order. The [`README.md`](README.md) status table lists each finding's state.
 
-1. **Ordering heuristic.** Close the gap to the paper's state counts; this is in progress next.
+1. **Ordering heuristic: done** (3.16). Open refinements:
+   - capture layer duration, not just peak cut (perfect-vertex square meshes);
+   - order the edges within each vertex's emission (it changes G^max: 5×5 gives 146 vs 208
+     depending on edge-id order);
+   - optionally race the top two candidates with capped LBL runs.
 2. **Cleanup** (audit 1.9, 2.5–2.7, §3):
    - remove dead code and the duplicate `src/common/variable_ordering.hpp`;
    - merge the `graph_operations` variants;

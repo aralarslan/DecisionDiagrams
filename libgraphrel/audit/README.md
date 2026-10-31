@@ -23,7 +23,8 @@ and lessons learned) is in [`HANDOFF.md`](HANDOFF.md).
 | 2.1 `bell_cache` O((V+E)²) | Fixed (`e791a17`) |
 | 2.2 Boundary precompute O(L·V) | Fixed (`e791a17`) |
 | 2.3 Redundant connectivity rebuilds | Removed (`e791a17`); frontier-local states: open (redesign) |
-| 2.4 Ordering helpers | O(V+E), identical output (`e791a17`); better ordering heuristic: open |
+| 2.4 Ordering helpers | O(V+E), identical output (`e791a17`) |
+| Ordering quality (gap to Wu & Sun Table 2) | New `ordering_strategy::cutwidth`, default for LBL and BDD: N20 387,481 → 65,858 states (`f4c3dc1`); see HANDOFF §3.16 |
 | 2.5–2.7, §3 | Open |
 | §4 Tests and CI | Brute-force fuzz, precondition, I/O and paper tests; CI runs them on GCC and Clang, plus an ASan/UBSan job (`5df2a69`, `542bf11`) |
 
