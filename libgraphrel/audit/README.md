@@ -3,56 +3,160 @@
 Scope: everything under `libgraphrel/` (about 4,800 lines), plus how `tests/graphrel.test.cpp`
 and CI use it. Audited at commit `39fe87d`.
 
+## Which reference applies to which code
+
+libgraphrel contains two different algorithms, and they must be judged against different sources:
+
+| Entry point | Algorithm | Reference |
+|---|---|---|
+| `calculate_reliability` (`src/lbl/`) | Layer-by-layer recursive decomposition (LBL) | **Wu & Sun (2024)**, RESS 244:109968 — the paper's contribution |
+| `build_diagram` (`src/diagram/`) | Classic boundary-set (BS) based BDD | Hardy, Lucet & Limnios (2007) [20]; BS isomorphism from Carlier & Lucet [32] / Imai et al. [33]; imperfect vertices per Kuo et al. [19] / Pan et al. [31]. Wu & Sun only summarise it in §2.3 as their **baseline**. |
+
+So the Wu & Sun preconditions below are checked against **LBL only**. `diagram.hpp` and
+`diagram.cpp` describe the BDD builder as "Wu & Sun 2024, BS-BDD". That attribution should point
+to Hardy et al. instead. The BDD findings (1.1, 1.2) still need checking against those
+references, which I don't have yet.
+
+### Wu & Sun (2024) preconditions and whether the code enforces them
+
+| Paper precondition | Where in paper | Enforced? | What happens if violated (measured) |
+|---|---|---|---|
+| All vertices of V connected | §2.1 Assumption 1 | No | Harmless: LBL is still exact on disconnected graphs (0 / 10,000 fuzz mismatches) |
+| Two-state, independent variables | §2.1 Assumptions 2–3 | By construction | — |
+| 2 ≤ \|K\| ≤ \|V\| | §2.1 Notations | **No** (parser and `graph` accept \|K\| = 1) | With \|K\| = 1 and an ordering that doesn't start at the terminal, LBL is wrong (666 / 10,000), because early success fires before the terminal's vertex variable is processed. The BDD is wrong for \|K\| = 1 with any ordering (1.2). The library's own test `single_terminal_trivial` relies on \|K\| = 1 being accepted. |
+| Ordering by BFS from a seed k ∈ K, with **vertex priority** (each vertex before its incident edges) | §2.3; Fig. 4 Step 1 | Built-in generators: **yes**. `calculate_reliability(g, ordering)`: **no** | See the ordering results below and 1.4 |
+| Isomorphism = identical boundary-set partition with K-marks | §2.3, §3.2 | Only approximately: identity goes through a 64-bit hash (1.6) | — |
+| Exact result | Abstract, §5 | **No**: branches with p ≤ 1e-15 are dropped (1.5) | 1.2e-6 relative error in 1-R |
+
+**Ordering: BFS vs DFS.** I fuzzed 10,000 graphs inside the paper's assumptions (connected simple
+graphs, 2 ≤ |K| ≤ 4, all p in (0,1)) and compared LBL against brute force with each ordering:
+
+| Ordering passed to LBL | Mismatches |
+|---|---|
+| default BFS (paper, Fig. 4) | 0 |
+| library DFS | 0 |
+| random ordering that respects vertex priority (not BFS/DFS shaped) | 0 |
+| random ordering that ignores vertex priority | **8,068** |
+
+So for **correctness** the real precondition is vertex priority plus |K| ≥ 2. BFS vs DFS doesn't
+matter for the answer. For **efficiency** it matters enormously. The paper prefers BFS, and DFS can
+be orders of magnitude worse. Here is G^max (the peak layer size) for the same mesh under different
+edge insertion orders (`order_sens.cpp`):
+
+| Mesh | BFS G^max (40 edge orders) | DFS G^max (first 3 orders) |
+|---|---|---|
+| 5×5 (= N8) | 253 – 782 | 146, 28,569, 10,943 |
+| 3×10 (= N6) | 24 – 66 | 26,245, 7,008, 7,872 |
+| 20×2 (= N9) | 5 – 11 | 5, 23,532, 26,019 |
+
+`ordering_strategy::dfs` is exposed as an equal alternative. It should be documented as
+correct-but-risky, or removed.
+
+### Reproducing the paper's numbers with LBL
+
+Every reliability value I could reproduce matches Wu & Sun **exactly**. The peak layer sizes
+(G^max, Table 2 column B¹) do **not**: the library keeps more states per layer than the paper.
+
+| Network | Paper R | libgraphrel R | Paper B¹ (G^max) | libgraphrel G^max | Paper time | libgraphrel time |
+|---|---|---|---|---|---|---|
+| Bridge, Fig. 1–3 | 0.760078728 | 0.760078728 | layers 1,1,2,3,4,5,4,3,1 | layers 1,1,2,3,4,5,3,3,1 | — | 0 s |
+| N9 (2×20 mesh) | 0.230160 | 0.230160 | 4 | 5 | 0.0 s | 0.0 s |
+| N6 (3×10 mesh) | 0.609632 | 0.609632 | 12 | 19 | 0.0 s | 0.0 s |
+| N7 (3×12 mesh) | 0.579399 | 0.579399 | 12 | 19 | 0.0 s | 0.0 s |
+| N8 (5×5 mesh) | 0.711988 | 0.711988 | 118 | 253 | 0.0 s | 0.0 s |
+| N20 (10×10 mesh) | 0.714299 | 0.714299 | 53,924 | **340,599** | 42.9 s | 200.8 s, 882 MB |
+| N27 (complete K₁₂) | 0.810000 | 0.810000 | 816,465 | 42,665 | 72.9 s | 2.2 s |
+
+All edges and vertices are 0.9, with the two terminals at the largest distance apart (opposite mesh
+corners). I identified N6–N9 from |V| and |E| in Table 1; the exact match of R confirms the
+identification.
+
+- On the bridge, the library is at or below the paper layer by layer. Coloop detection and
+  dead-component pruning (not in the paper) remove one state at layer 6.
+- On K₁₂ it is 19× *below* the paper, again thanks to coloop detection and pruning.
+- On meshes it is 1.25–6.3× *above* the paper. BFS tie-breaking doesn't explain it: the best of
+  40 edge orders on 5×5 is still 253, against 118. On the 20×2 ladder I dumped every state at the
+  peak layer and all 5 are genuinely different (they differ in which boundary vertices survived, or
+  which block holds the terminal). So the gap comes from how the boundary set is defined or how
+  states are counted, not from a correctness error. **I couldn't settle this from the paper
+  alone.** It defers the BS definition to [20] and [33], so those papers are needed to finish this.
+- The paper's large meshes N25/N26 (1000×10 and 1200×10, 28,990 and 34,790 layers) need 540 MB
+  in the paper. In libgraphrel, the `bell_cache` alone needs (L+1)(L+2)/2 × 8 bytes, which is
+  **3.4 GB for N25 and 4.8 GB for N26**. The per-level boundary tables add roughly another 1 GB.
+  That's before a single state is created (see 2.1–2.2). Both figures are computed from the code,
+  not measured.
+
 ## How this was checked
 
-- I read every source and header.
+- I read every source and header, and the Wu & Sun paper.
 - I compiled with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Wmissing-declarations`.
   There were only 15 warnings, mostly `int`/`size_t` mixing in `partition.cpp`.
-- **Differential fuzzing** (`fuzz.cpp` in this folder): I generated 10,000 random small graphs
-  (2–7 vertices, 1–9 edges, multi-edges, self-loops, perfect and imperfect edges and vertices,
-  1–4 terminals). On each one, `calculate_reliability` (LBL) and `build_diagram` (BDD) were
-  compared against brute-force enumeration of all states.
+- **Differential fuzzing** (`fuzz.cpp` in this folder). I generated random small graphs (3–7
+  vertices, up to 9 edges) and compared `calculate_reliability` (LBL) and `build_diagram` (BDD)
+  against brute-force enumeration of all states. The fuzzer has these modes:
+  - `PAPER=1`: Wu & Sun's assumptions exactly.
+  - `PAPER=1 PERFECT=1`: the same, but some edges have p = 1.
+  - `KMIN2=1`: anything goes, with |K| ≥ 2.
+  - default: anything goes, including disconnected graphs, loops, multi-edges, p ∈ {0, 1} and |K| = 1.
+
+  It also runs LBL with DFS, random vertex-priority orderings and unconstrained random orderings.
 - I ran the same fuzz under ASan and UBSan. It found **no memory errors and no undefined behaviour**.
 - **Targeted repros** (`probe.cpp`) for each finding below, plus timing and peak-memory scaling runs.
-- Profiled with callgrind on a 7×7 grid.
+- Paper reproduction (`paper.cpp`, `order_sens.cpp`) and a callgrind profile on a 7×7 grid.
 
-**Headline:** the LBL path matched brute force on every fuzz case. The **BDD path is wrong on
-about 10 % of random graphs** (296 of 3,000 with any number of terminals; 9 of 5,000 with at least two
-terminals). There are two root causes, both one-line fixes, described below. With both fixes applied
-locally, BDD had 0 mismatches over 10,000 cases. Most other findings are about performance, which
-is dominated by a design choice: each decomposition state stores the whole graph.
+**Headline.** 10,000 graphs per mode:
+
+| Mode | LBL mismatches | BDD mismatches |
+|---|---|---|
+| `PAPER=1` (Wu & Sun assumptions) | 0 | 0 |
+| `PAPER=1 PERFECT=1` (+ some p = 1 edges) | 0 | **545** (bug 1.1) |
+| `KMIN2=1` (anything, \|K\| ≥ 2) | 0 | 9 (bug 1.1) |
+| default (anything, incl. \|K\| = 1) | 0 | 963 (mostly 1.2, which is outside both methods' scope) |
+
+- **LBL is exact within the paper's assumptions** with every ordering that respects vertex
+  priority, and it reproduces the paper's R values exactly. Its problems are unenforced
+  preconditions (|K| ≥ 2, vertex-priority orderings, sorted terminals), the 1e-15 cutoff, and
+  efficiency: more states per layer than the paper, and memory that grows quadratically with graph size.
+- The BDD builder (not Wu & Sun's method) has one real bug, triggered by edges with p = 1
+  together with failed vertices (1.1). With 1.1 and 1.2 fixed locally, it had 0 mismatches in
+  every mode.
 
 ```
 # compile all libgraphrel/src/*/*.cpp into libgraphrel.a first, then:
 g++ -std=c++20 -O2 -I<repo> -I<repo>/libgraphrel/include -I<repo>/libgraphrel/src \
-    libgraphrel/audit/fuzz.cpp libgraphrel.a -o fuzz && ./fuzz 5000 && KMIN2=1 ./fuzz 5000
+    libgraphrel/audit/fuzz.cpp libgraphrel.a -o fuzz
+PAPER=1 ./fuzz 10000 && PAPER=1 PERFECT=1 ./fuzz 10000 && KMIN2=1 ./fuzz 10000
 ```
 
 ---
 
 ## 1. Correctness
 
-### 1.1 BDD connects through a failed vertex using perfect edges *(high)*
-`src/diagram/diagram.cpp:177-187`. The perfect-edge shortcut (`prob >= 1.0` → contract) runs
-**before** the ghost-edge check. So an edge already removed by `delete_vertex_in_place` gets
-contracted anyway, which joins its endpoints through the failed vertex.
+### 1.1 BDD connects through a failed vertex using perfect edges *(BDD builder; medium)*
+`src/diagram/diagram.cpp:177-187`. The perfect-edge shortcut (`prob >= 1.0` → contract) is an
+optimisation of this implementation; it isn't in any of the references. It runs **before** the
+ghost-edge check, so an edge already removed by `delete_vertex_in_place` gets contracted anyway,
+which joins its endpoints through the failed vertex. This happens within Wu & Sun-style assumptions
+(connected graph, |K| = 2) whenever some edge has p = 1 exactly: 545 of 10,000 cases.
 
 ```
 s=0, v=1 (p_v=0.5), t=2;  edges 0-1 (p=1), 1-2 (p=1), 0-2 (p=0.5)
 exact = 0.75    LBL = 0.75    BDD = 1.0
 ```
-**Fix:** swap the two `if` blocks so the ghost check comes first. Verified: this fix together with
-the one in 1.2 gives 0 fuzz mismatches.
+**Fix:** swap the two `if` blocks so the ghost check comes first. Verified: 0 fuzz mismatches in
+every mode afterwards.
 
-### 1.2 BDD ignores terminal vertex reliability when |K| = 1 *(high)*
-`diagram.cpp:143`. `is_success_terminal()` is trivially true when there are fewer than 2 terminals,
-so the BDD returns `1` before the terminal's own vertex variable is ever processed.
+### 1.2 |K| = 1 isn't rejected, and LBL and BDD disagree on it *(precondition; low–medium)*
+Wu & Sun require 2 ≤ |K| (§2.1), and K-terminal BDD methods assume the same. libgraphrel accepts
+|K| = 1 anyway (`read_graph`, `graph`, and the test `single_terminal_trivial`).
+- BDD (`diagram.cpp:143`): `is_success_terminal()` is trivially true, so it returns `1` before the
+  terminal's vertex variable is processed.
+- LBL is correct only when the ordering starts at the terminal, which BFS and DFS do.
 ```
 2 vertices, terminal {0}, p_v0 = 0.3      exact = 0.3    LBL = 0.3    BDD = 1.0
 ```
-This accounts for most of the 296 mismatches. **Fix:** don't short-circuit on success while an
-imperfect terminal vertex variable is still pending. Simpler alternative: put terminal vertex
-variables first in the ordering and multiply them in up front.
+**Fix:** reject |K| < 2 with `std::invalid_argument` in `validate()`, matching the paper. If you
+want to keep it supported, define it as `R = p(terminal)`.
 
 ### 1.3 Unsorted `graph::terminals` silently gives wrong answers *(high, public API)*
 `graph.hpp:94`, `lbl_variable_processing.cpp:103` and `diagram.cpp:227` all use
@@ -66,23 +170,28 @@ path 0-1-2, terminals = {2, 0}, p_v0 = 0.5      exact = 0.405    LBL = BDD = 0.8
 **Fix:** have `validate()` require the list to be sorted, unique and non-empty. Better: make
 `terminals` private behind a setter that normalises it (see 3.1).
 
-### 1.4 `calculate_reliability(g, ordering)` trusts arbitrary orderings *(medium, public API)*
-`reliability.hpp:32`. The algorithm needs every variable to appear exactly once, with each vertex
-before all of its incident edges. None of this is checked:
+### 1.4 `calculate_reliability(g, ordering)` doesn't enforce the paper's ordering precondition *(medium, public API)*
+`reliability.hpp:32`. Wu & Sun build the ordering by BFS from a seed in K under the vertex
+priority principle (§2.3, Fig. 4 Step 1). The built-in BFS and DFS generators satisfy this. The
+custom-ordering overload accepts anything. Measured: any vertex-priority ordering is exact when
+|K| ≥ 2, and orderings that break vertex priority are wrong 77–81 % of the time (see the
+ordering table above).
 ```
 path 0-1-2, p_v1 = 0.5      exact = 0.405
   edges-first ordering      → 0.81   (middle vertex never matters: early success)
   ordering missing vars     → 0.0
 ```
-**Fix:** check that the ordering is a permutation and respects vertex priority (O(V+E)), and
-throw `std::invalid_argument` if not.
+**Fix:** check in O(V+E) that the ordering is a permutation of all variables and puts each vertex
+before its incident edges, and throw `std::invalid_argument` if not. Document that DFS is valid but
+can be orders of magnitude slower than BFS.
 
 ### 1.5 Probability cutoff `PROB_EPSILON = 1e-15` biases small unreliabilities *(medium)*
 `lbl_variable_processing.cpp:19`. Branches with probability ≤ 1e-15 are dropped. On a 5×5 grid
 with p = 0.9999 the LBL value of `1-R` is off by **1.2e-6 relative**. With the cutoff set to `0` the
 gap to BDD falls to 5.5e-9, which is floating-point noise. This matters to anyone computing
-unreliability of highly reliable networks. **Fix:** skip only exact zeros, or make the cutoff an
-opt-in parameter.
+unreliability of highly reliable networks. It is also a departure from Wu & Sun, whose LBL is
+exact: Fig. 4 drops only invalid subgraphs, never small-probability ones. **Fix:** skip only exact
+zeros, or make the cutoff an opt-in parameter.
 
 ### 1.6 State identity is hash-based and can overflow *(medium, soundness)*
 - `partition_key.boundary_hash` is the **only** record of which boundary vertices a state has.
@@ -123,6 +232,10 @@ any leftover input on the line.
   can leave a partly used pool whose unconstructed tail the destructor later "destroys".
 
 ### 1.9 API docs don't match behaviour *(low)*
+`diagram.hpp:13` and the `diagram.cpp` file header attribute the BDD builder to "Wu & Sun 2024,
+BS-BDD". Wu & Sun's method is LBL; the BS-BDD is their §2.3 baseline from Hardy, Lucet & Limnios
+(2007). Cite that instead.
+
 `diagram.hpp:33-43` says `edge_var()` returns -1 for perfect edges, but every edge gets a variable.
 `vertex_var()` returns -1 only if *all* vertices are perfect: when one vertex is imperfect, every
 vertex gets a variable. The result is wasted BDD variables and a misleading API.
@@ -307,13 +420,18 @@ as `copy + in_place` in the tests.
 
 ## Suggested order of work
 
-1. **Correctness, small diffs:** 1.1 and 1.2 (swap the checks in `diagram.cpp`, terminal-vertex
-   handling), 1.3 (validate or normalise terminals), 1.4 (validate orderings), 1.5 (drop the
-   epsilon), 1.7 (parser). Add the fuzz test and turn tests on in CI.
-2. **Cheap performance wins:** size `bell_cache` by F (2.1), make `precompute` incremental (2.2),
+1. **Correctness, small diffs.**
+   - Enforce Wu & Sun's preconditions for LBL: |K| ≥ 2 (1.2) and vertex-priority orderings (1.4).
+   - Validate or normalise the terminal list (1.3).
+   - Drop the epsilon (1.5) and fix the parser (1.7).
+   - In the BDD builder, swap the ghost and perfect-edge checks (1.1).
+   - Add the fuzz test in `PAPER=1` and `KMIN2=1` modes, and turn tests on in CI.
+2. **Find the G^max gap against Table 2.** Compare the boundary-set definition with Hardy et al.
+   [20] / Imai et al. [33], starting from the 5×5 mesh (118 vs 253).
+3. **Cheap performance wins:** size `bell_cache` by F (2.1), make `precompute` incremental (2.2),
    remove the redundant failure checks (2.3), fix the ordering helpers (2.4). Together these turn
    the ladder from quadratic back to roughly linear.
-3. **Cleanup:** delete dead code and the duplicate header, merge the `graph_operations` variants,
+4. **Cleanup:** delete dead code and the duplicate header, merge the `graph_operations` variants,
    fix the docs.
-4. **Redesign (bigger):** frontier-local states with exact keys (2.3 / 1.6) and an encapsulated
+5. **Redesign (bigger):** frontier-local states with exact keys (2.3 / 1.6) and an encapsulated
    `graph` class (3.1).
