@@ -7,6 +7,7 @@
 #include <numeric>
 #include <random>
 #include <sstream>
+#include <stdexcept>
 
 using namespace teddy::graphrel;
 
@@ -97,7 +98,7 @@ int main(int argc, char** argv) {
     const bool perfect_ok = std::getenv("PERFECT") != nullptr;
     const bool kmin2 = paper || std::getenv("KMIN2") != nullptr;
     std::mt19937_64 rng(12345);
-    int fails_lbl = 0, fails_bdd = 0, fails_dfs = 0, fails_vp = 0, fails_any = 0;
+    int fails_lbl = 0, fails_bdd = 0, fails_dfs = 0, fails_vp = 0, fails_any = 0, rejected_any = 0;
     for (int it = 0; it < iters; ++it) {
         std::size_t V = (paper ? 3 : 2) + rng() % (paper ? 5 : 6);   // 2..7 (paper: 3..7)
         std::size_t E = 1 + rng() % 9;                                 // 1..9
@@ -147,9 +148,16 @@ int main(int argc, char** argv) {
         auto off = [&](double r) { return std::fabs(rb - r) > 1e-9; };
         fails_dfs += off(calculate_reliability(g, generate_variable_ordering(g, ordering_strategy::dfs)));
         fails_vp  += off(calculate_reliability(g, random_vertex_priority(g, rng)));
-        fails_any += off(calculate_reliability(g, random_any(g, rng)));
+        // Orderings that break vertex priority are rejected since 5df2a69; on the
+        // original code they returned wrong answers. Count either outcome.
+        try {
+            fails_any += off(calculate_reliability(g, random_any(g, rng)));
+        } catch (const std::invalid_argument&) {
+            ++rejected_any;
+        }
     }
     std::printf("iters=%d  lbl_mismatches=%d  bdd_mismatches=%d\n", iters, fails_lbl, fails_bdd);
-    std::printf("LBL with other orderings: dfs=%d  random_vertex_priority=%d  random_unconstrained=%d\n",
-                fails_dfs, fails_vp, fails_any);
+    std::printf("LBL with other orderings: dfs=%d  random_vertex_priority=%d  "
+                "random_unconstrained: wrong=%d rejected=%d\n",
+                fails_dfs, fails_vp, fails_any, rejected_any);
 }

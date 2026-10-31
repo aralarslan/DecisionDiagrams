@@ -5,6 +5,9 @@ and CI use it. Audited at commit `39fe87d`.
 
 ## Status on branch `feat/libgraphrel-optimisations`
 
+The full traceability record (what was seen, how it was found, why each fix was chosen, results
+and lessons learned) is in [`HANDOFF.md`](HANDOFF.md).
+
 | Finding | Status |
 |---|---|
 | Existing graphrel tests did not compile (`decomp_state::union_find` → `uf_`) | Fixed (`b6551c7`) |
