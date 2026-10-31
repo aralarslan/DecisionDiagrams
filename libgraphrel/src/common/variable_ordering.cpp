@@ -9,6 +9,8 @@
  * - BFS (default): breadth-first from the first terminal.
  * - DFS: depth-first from the first terminal. Equally correct, but it can
  *   produce far larger boundary sets (and layers) than BFS.
+ * - cutwidth: greedy edge-cut minimisation with candidate selection; the
+ *   default for calculate_reliability() and build_diagram().
  *
  * Both run in O(V + E). When a vertex is emitted, the edges that become ready
  * are exactly its incident edges whose other endpoint was already emitted,
@@ -19,10 +21,12 @@
 #include "common/validation.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <limits>
 #include <queue>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -130,6 +134,176 @@ std::vector<variable> dfs_ordering(const graph& g) {
     return out.take();
 }
 
+// ── Cut-width ordering ───────────────────────────────────────────────────────
+//
+// The number of LBL states per layer is driven less by the boundary size F
+// than by the number of unprocessed edges leaving the processed part (the
+// edge cut). With a small cut, most boundary vertices have a single remaining
+// edge, so non-terminal components touching the boundary once are pruned as
+// dead ends and more states merge. Example (10x10 mesh, p = 0.9, exact):
+// BFS sweeps diagonally (cut 18, 387,481 states); a cut-width order sweeps
+// row by row (cut 11, F = 11 for both). See libgraphrel/audit/HANDOFF.md.
+
+std::size_t non_loop_neighbor(const graph& g, std::size_t eid, std::size_t v) {
+    return neighbor(g, eid, v);
+}
+
+/// Greedy vertex sequence: repeatedly take the reached vertex whose addition
+/// grows the edge cut least (deg(v) - 2 * processed_neighbours(v)), preferring
+/// the most recently touched vertex (continue the current line), then the
+/// lowest id. @p first, if given, is forced as the second vertex.
+std::vector<std::size_t> greedy_cut_sequence(const graph& g, std::size_t seed,
+                                             std::size_t first) {
+    constexpr std::size_t none = std::numeric_limits<std::size_t>::max();
+    const std::size_t n = g.num_vertices;
+    std::vector<long long> deg(n, 0), processed_nb(n, 0), touched(n, -1);
+    for (std::size_t v = 0; v < n; ++v)
+        for (std::size_t eid : g.adj[v])
+            if (g.edges[eid].from != g.edges[eid].to)
+                ++deg[v];
+
+    // Min-heap on (cut growth, -touch time, id) with lazy invalidation.
+    struct entry {
+        long long growth;
+        long long neg_touch;
+        std::size_t id;
+        bool operator>(const entry& o) const {
+            return std::tie(growth, neg_touch, id) > std::tie(o.growth, o.neg_touch, o.id);
+        }
+    };
+    std::priority_queue<entry, std::vector<entry>, std::greater<entry>> heap;
+    std::vector<char> done(n, 0);
+    std::vector<std::size_t> sequence;
+    sequence.reserve(n);
+    long long clock = 0;
+
+    auto take = [&](std::size_t v) {
+        done[v] = 1;
+        sequence.push_back(v);
+        ++clock;
+        for (std::size_t eid : g.adj[v]) {
+            const std::size_t o = non_loop_neighbor(g, eid, v);
+            if (o == v || done[o])
+                continue;
+            ++processed_nb[o];
+            touched[o] = clock;
+            heap.push({deg[o] - 2 * processed_nb[o], -touched[o], o});
+        }
+    };
+    auto pop_valid = [&]() -> std::size_t {
+        while (!heap.empty()) {
+            const entry top = heap.top();
+            heap.pop();
+            const std::size_t v = top.id;
+            if (!done[v] && top.growth == deg[v] - 2 * processed_nb[v] &&
+                top.neg_touch == -touched[v])
+                return v;
+        }
+        return none;
+    };
+
+    take(seed);
+    if (first != none && !done[first])
+        take(first);
+    std::size_t next_unvisited = 0;
+    while (sequence.size() < n) {
+        std::size_t v = pop_valid();
+        if (v == none) { // new component: lowest unvisited id
+            while (done[next_unvisited])
+                ++next_unvisited;
+            v = next_unvisited;
+        }
+        take(v);
+    }
+    return sequence;
+}
+
+struct cut_profile {
+    std::size_t max_cut = 0;     ///< largest edge cut over the sequence
+    std::size_t max_front = 0;   ///< largest vertex boundary
+    std::size_t total_cut = 0;   ///< sum of cuts (tie-breaker)
+    bool operator<(const cut_profile& o) const {
+        return std::tie(max_cut, max_front, total_cut) <
+               std::tie(o.max_cut, o.max_front, o.total_cut);
+    }
+};
+
+cut_profile profile_of(const graph& g, const std::vector<std::size_t>& sequence) {
+    std::vector<char> done(g.num_vertices, 0);
+    std::vector<std::size_t> open_edges(g.num_vertices, 0);
+    for (std::size_t v = 0; v < g.num_vertices; ++v)
+        for (std::size_t eid : g.adj[v])
+            if (g.edges[eid].from != g.edges[eid].to)
+                ++open_edges[v];
+    cut_profile p;
+    std::size_t cut = 0, front = 0;
+    for (std::size_t v : sequence) {
+        done[v] = 1;
+        for (std::size_t eid : g.adj[v]) {
+            const std::size_t o = non_loop_neighbor(g, eid, v);
+            if (o == v)
+                continue;
+            if (done[o]) {
+                --cut;
+                --open_edges[v];
+                if (--open_edges[o] == 0)
+                    --front;
+            } else {
+                ++cut;
+            }
+        }
+        if (open_edges[v] > 0)
+            ++front;
+        p.max_cut = std::max(p.max_cut, cut);
+        p.max_front = std::max(p.max_front, front);
+        p.total_cut += cut;
+    }
+    return p;
+}
+
+std::vector<std::size_t> vertices_of(const std::vector<variable>& ordering) {
+    std::vector<std::size_t> sequence;
+    for (const variable& var : ordering)
+        if (var.type == variable_type::vertex)
+            sequence.push_back(var.id);
+    return sequence;
+}
+
+std::vector<variable> cutwidth_ordering(const graph& g) {
+    constexpr std::size_t none = std::numeric_limits<std::size_t>::max();
+    constexpr std::size_t max_forced_starts = 16;
+    const std::size_t seed = g.terminals.empty() ? 0 : g.terminals.front();
+
+    // Candidates: BFS (so the result is never worse than BFS on this metric),
+    // the free greedy, and the greedy forced through each neighbour of the
+    // seed (this picks the sweep direction, e.g. the short side of a mesh).
+    std::vector<std::size_t> best = vertices_of(bfs_ordering(g));
+    cut_profile best_profile = profile_of(g, best);
+    auto consider = [&](std::vector<std::size_t> candidate) {
+        const cut_profile p = profile_of(g, candidate);
+        if (p < best_profile) {
+            best_profile = p;
+            best = std::move(candidate);
+        }
+    };
+    consider(greedy_cut_sequence(g, seed, none));
+    std::vector<char> tried(g.num_vertices, 0);
+    std::size_t forced = 0;
+    for (std::size_t eid : g.adj[seed]) {
+        const std::size_t nb = neighbor(g, eid, seed);
+        if (nb == seed || tried[nb] || forced == max_forced_starts)
+            continue;
+        tried[nb] = 1;
+        ++forced;
+        consider(greedy_cut_sequence(g, seed, nb));
+    }
+
+    ordering_builder out(g);
+    for (std::size_t v : best)
+        out.emit_vertex(v);
+    return out.take();
+}
+
 } // namespace
 
 std::vector<variable> generate_variable_ordering(const graph& g) {
@@ -145,6 +319,8 @@ std::vector<variable> generate_variable_ordering(const graph& g,
         return bfs_ordering(g);
     case ordering_strategy::dfs:
         return dfs_ordering(g);
+    case ordering_strategy::cutwidth:
+        return cutwidth_ordering(g);
     }
     throw std::invalid_argument("generate_variable_ordering: unknown strategy");
 }

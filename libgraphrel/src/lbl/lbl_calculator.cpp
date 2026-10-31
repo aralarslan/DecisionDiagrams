@@ -27,7 +27,8 @@ lbl_calculator::lbl_calculator(const graph& g,
                                std::size_t pool_size,
                                std::size_t extra_pool_size)
     : lbl_calculator(g,
-                     generate_variable_ordering(detail::require_valid(g, who)),
+                     generate_variable_ordering(detail::require_valid(g, who),
+                                                ordering_strategy::cutwidth),
                      pool_size, extra_pool_size)
 {}
 

@@ -17,6 +17,10 @@ namespace teddy::graphrel {
 /**
  * @brief Calculate network reliability using the layer-by-layer algorithm.
  *
+ * Exact. Uses ordering_strategy::cutwidth; pass an ordering from
+ * generate_variable_ordering(g, ordering_strategy::bfs) to reproduce
+ * Wu & Sun's setup exactly (same result, usually more states per layer).
+ *
  * @param g Graph with edge/vertex reliabilities and terminal set.
  * @return Probability that all terminals are connected.
  */

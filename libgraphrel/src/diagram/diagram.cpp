@@ -277,7 +277,7 @@ private:
 
 reliability_diagram build_diagram(const graph& g, teddy::int64 pool_size) {
     detail::require_valid(g, "build_diagram");
-    auto ordering = generate_variable_ordering(g);
+    auto ordering = generate_variable_ordering(g, ordering_strategy::cutwidth);
     bool has_imperfect = has_imperfect_vertices(g);
     teddy::int32 var_count = count_bdd_variables(ordering, has_imperfect);
 

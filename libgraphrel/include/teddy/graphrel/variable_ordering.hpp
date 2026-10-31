@@ -37,12 +37,24 @@ struct variable {
  * @brief Variable ordering strategy
  */
 enum class ordering_strategy {
-    bfs, ///< Breadth-First Search — Wu & Sun (2024) default
-    dfs  ///< Depth-First Search
+    /// Breadth-first from the first terminal, as in Wu & Sun (2024), Fig. 4.
+    bfs,
+    /// Depth-first from the first terminal. Correct, but can produce far more
+    /// states per layer than the other strategies; mostly for experiments.
+    dfs,
+    /// Greedy edge-cut minimisation: picks, among BFS and several greedy
+    /// sweeps from the first terminal, the order whose largest edge cut is
+    /// smallest. Usually far fewer states per layer than BFS (e.g. 10x10 mesh
+    /// and random geometric graphs). Default for calculate_reliability() and
+    /// build_diagram().
+    cutwidth
 };
 
 /**
  * @brief Generate a BFS variable ordering (Wu & Sun default).
+ *
+ * Kept as BFS for compatibility. calculate_reliability() and build_diagram()
+ * use ordering_strategy::cutwidth by default.
  *
  * @param g Graph with terminals set.
  * @return Ordered list of variables (vertices before incident edges).

@@ -19,6 +19,7 @@
 #include <teddy/graphrel/graphrel.hpp>
 #include "common/bell_cache.hpp"
 #include "common/partition.hpp"
+#include "lbl/lbl_detail.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -187,30 +188,34 @@ namespace {
 
 void run_fuzz(fuzz_mode mode, int iterations, std::uint64_t seed) {
     std::mt19937_64 rng(seed);
-    int lbl_bad = 0, bdd_bad = 0, dfs_bad = 0, random_bad = 0;
+    int lbl_bad = 0, bdd_bad = 0, bfs_bad = 0, dfs_bad = 0, random_bad = 0;
     for (int it = 0; it < iterations; ++it) {
         const graph g = random_graph(rng, mode);
         const double exact = brute_force(g);
         auto off = [&](double r) { return std::fabs(r - exact) > exact_tol; };
 
-        const double lbl = calculate_reliability(g);
+        const double lbl = calculate_reliability(g);  // default: cutwidth ordering
         const double bdd = bdd_reliability(g);
+        const double bfs = calculate_reliability(
+            g, generate_variable_ordering(g, ordering_strategy::bfs));
         const double dfs = calculate_reliability(
             g, generate_variable_ordering(g, ordering_strategy::dfs));
         const double rnd = calculate_reliability(g, random_vertex_priority_ordering(g, rng));
 
         lbl_bad += off(lbl);
         bdd_bad += off(bdd);
+        bfs_bad += off(bfs);
         dfs_bad += off(dfs);
         random_bad += off(rnd);
-        if (off(lbl) || off(bdd) || off(dfs) || off(rnd)) {
+        if (off(lbl) || off(bdd) || off(bfs) || off(dfs) || off(rnd)) {
             BOOST_TEST_MESSAGE("mismatch at iteration " << it << ": exact=" << exact
-                               << " lbl=" << lbl << " bdd=" << bdd << " dfs=" << dfs
-                               << " random=" << rnd << "\n" << dump(g));
+                               << " lbl=" << lbl << " bdd=" << bdd << " bfs=" << bfs
+                               << " dfs=" << dfs << " random=" << rnd << "\n" << dump(g));
         }
     }
     BOOST_TEST(lbl_bad == 0);
     BOOST_TEST(bdd_bad == 0);
+    BOOST_TEST(bfs_bad == 0);
     BOOST_TEST(dfs_bad == 0);
     BOOST_TEST(random_bad == 0);
 }
@@ -450,6 +455,26 @@ BOOST_AUTO_TEST_CASE(pruned_bounds_contain_exact_value) {
     g.set_terminals({0, 1});
     BOOST_CHECK_THROW(calculate_reliability_bounds(g, -1.0), std::invalid_argument);
     BOOST_CHECK_THROW(calculate_reliability_bounds(g, std::nan("")), std::invalid_argument);
+}
+
+// The default (cutwidth) ordering must beat BFS on meshes: same result, far
+// fewer states per layer. 7x7 mesh, p = 0.9: BFS 4,578 vs cutwidth 1,595.
+BOOST_AUTO_TEST_CASE(cutwidth_ordering_reduces_layer_size) {
+    const graph g = mesh(7, 7, 0.9);
+    lbl_calculator by_bfs(g, generate_variable_ordering(g, ordering_strategy::bfs));
+    lbl_calculator by_default(g);
+    const double r_bfs = by_bfs.calculate();
+    const double r_default = by_default.calculate();
+    BOOST_TEST(r_bfs == r_default, boost::test_tools::tolerance(1e-12));
+    BOOST_TEST(by_default.get_statistics().max_layer_size * 2 <
+               by_bfs.get_statistics().max_layer_size);
+
+    // Rectangular mesh: the sweep must go along the short side.
+    const graph wide = mesh(4, 12, 0.9);
+    lbl_calculator wide_default(wide);
+    wide_default.calculate();
+    // (Short-side sweep: boundary <= 6; a long-side sweep would reach 13.)
+    BOOST_TEST(wide_default.get_statistics().max_boundary_size <= 6u);
 }
 
 // Carlier & Lucet (1996) §4.7, Algorithm 2 transcribed literally, compared
