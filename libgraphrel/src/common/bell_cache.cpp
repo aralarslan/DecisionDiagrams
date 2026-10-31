@@ -30,6 +30,10 @@ bell_cache::bell_cache(std::size_t max_n) : max_n_(max_n) {
   if (max_n == 0) {
     throw std::invalid_argument("bell_cache: max_n must be > 0");
   }
+  if (max_n > max_supported_n) {
+    throw std::invalid_argument(
+        "bell_cache: max_n must be <= 25 (larger Bell numbers overflow 64 bits)");
+  }
 
   // Initialize tables: stirling_[n][k] = S(n,k)
   // S(n,k) = number of ways to partition n elements into k non-empty subsets

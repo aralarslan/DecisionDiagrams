@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cassert>
 #include <stdexcept>
+#include <string>
 #include <unordered_set>
 
 namespace teddy::graphrel {
@@ -283,6 +284,17 @@ canonicalize_partition(const std::vector<std::size_t> &boundary_vertices,
   ws.sorted_boundary = boundary_vertices;
   std::sort(ws.sorted_boundary.begin(), ws.sorted_boundary.end());
   partition.boundary_vertices = ws.sorted_boundary;
+
+  // Partition numbers are only exact while B(F) fits in 64 bits and the
+  // cache covers F; beyond that, distinct states could share a number.
+  if (ws.sorted_boundary.size() > cache.max_n()) {
+    throw std::length_error(
+        "graphrel: boundary set of " +
+        std::to_string(ws.sorted_boundary.size()) +
+        " vertices exceeds the supported maximum of " +
+        std::to_string(cache.max_n()) +
+        " (Bell numbers beyond 25 overflow 64-bit partition numbers)");
+  }
 
   // Handle empty boundary set
   if (ws.sorted_boundary.empty()) {

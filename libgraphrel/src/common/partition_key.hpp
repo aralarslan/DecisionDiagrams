@@ -27,7 +27,9 @@ namespace teddy::graphrel {
  * - Supports unlimited network size via hashing
  */
 struct alignas(16) partition_key {
-  static constexpr std::size_t MAX_BOUNDARY_SIZE = 64;
+  /// Boundary sets are limited by 64-bit partition numbers (see
+  /// bell_cache::max_supported_n); k_bitset therefore never needs > 25 bits.
+  static constexpr std::size_t MAX_BOUNDARY_SIZE = bell_cache::max_supported_n;
 
   std::uint64_t partition_number; // Stirling-encoded partition structure
   std::uint64_t k_bitset;      // Bitmask: bit i = 1 if block i has K-vertices

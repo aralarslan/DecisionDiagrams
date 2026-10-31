@@ -81,10 +81,12 @@ private:
                           const variable& var, std::size_t var_idx);
     void prune_unreachable_edges(decomp_state* state);
 
+    // Declaration order matters: boundary_ needs ordering_, cache_ is sized
+    // from boundary_.
     const graph& net_;
-    bell_cache cache_;
     std::vector<variable> ordering_;
     boundary_computer boundary_;
+    bell_cache cache_;
     state_pool state_pool_;
     layer_map current_layer_;
     layer_map next_layer_;

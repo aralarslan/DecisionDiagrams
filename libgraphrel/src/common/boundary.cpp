@@ -1,137 +1,89 @@
 /**
  * @file boundary.cpp
  * @brief boundary_computer: shared boundary partition computation
- *
- * Used by both lbl_calculator (LBL algorithm) and bdd_builder (BS-BDD).
- * Uses thread-local bitmaps for O(1) per-vertex lookup with no heap
- * allocation in the steady state.
  */
 
 #include "common/boundary.hpp"
 
-#include <set>
+#include <algorithm>
+#include <limits>
 #include <vector>
 
 namespace teddy::graphrel {
 
+namespace {
+constexpr std::size_t not_in_ordering = std::numeric_limits<std::size_t>::max();
+}
+
 boundary_computer::boundary_computer(const graph& g,
                                      const std::vector<variable>& ordering)
     : net_(g)
-    , ordering_(ordering)
+    , edge_level_(g.num_edges, not_in_ordering)
+    , vertex_first_level_(g.num_vertices, not_in_ordering)
 {
-    edge_level_map_.reserve(g.num_edges);
-    vertex_introduction_level_.assign(g.num_vertices,
-                                      std::numeric_limits<std::size_t>::max());
-
-    for (std::size_t level = 0; level < ordering_.size(); ++level) {
-        const variable& var = ordering_[level];
+    for (std::size_t level = 0; level < ordering.size(); ++level) {
+        const variable& var = ordering[level];
         if (var.type == variable_type::edge) {
-            edge_level_map_[var.id] = level;
-        } else if (var.type == variable_type::vertex) {
-            if (vertex_introduction_level_[var.id] ==
-                    std::numeric_limits<std::size_t>::max())
-                vertex_introduction_level_[var.id] = level;
+            edge_level_[var.id] = level;
+            const edge& e = g.edges[var.id];
+            vertex_first_level_[e.from] = std::min(vertex_first_level_[e.from], level);
+            vertex_first_level_[e.to]   = std::min(vertex_first_level_[e.to], level);
+        } else {
+            vertex_first_level_[var.id] = std::min(vertex_first_level_[var.id], level);
         }
     }
 
-    precompute();
+    // Static front size per level: v is on the front at level l when
+    // first_level(v) < l <= last_edge_level(v). Sweep a difference array.
+    const std::size_t levels = ordering.size() + 1;
+    std::vector<std::ptrdiff_t> delta(levels + 1, 0);
+    for (std::size_t v = 0; v < g.num_vertices; ++v) {
+        std::size_t last = not_in_ordering;
+        for (std::size_t eid : g.adj[v]) {
+            const std::size_t el = edge_level_[eid];
+            if (el != not_in_ordering)
+                last = (last == not_in_ordering) ? el : std::max(last, el);
+        }
+        const std::size_t first = vertex_first_level_[v];
+        if (last == not_in_ordering || first == not_in_ordering || first >= last)
+            continue;
+        delta[first + 1] += 1;
+        delta[last + 1] -= 1;
+    }
+    std::ptrdiff_t running = 0;
+    for (std::size_t l = 0; l < levels; ++l) {
+        running += delta[l];
+        max_static_boundary_ = std::max(max_static_boundary_,
+                                        static_cast<std::size_t>(running));
+    }
 }
 
 boundary_partition boundary_computer::compute(const decomp_state& sg,
                                               std::size_t level,
                                               const bell_cache& cache) const {
-    std::vector<std::size_t> boundary = identify_vertices(sg, level);
-    return canonicalize_partition(boundary, sg.uf_, sg.current_K, cache);
-}
-
-void boundary_computer::precompute() {
-    level_boundary_cache_.resize(ordering_.size() + 1);
-
-    for (std::size_t level = 0; level <= ordering_.size(); ++level) {
-        level_boundary_data& data = level_boundary_cache_[level];
-        std::set<std::size_t> processed_cands;
-        std::set<std::size_t> unprocessed_cands;
-
-        for (std::size_t v = 0; v < net_.num_vertices; ++v) {
-            if (vertex_introduction_level_[v] < level)
-                processed_cands.insert(v);
-        }
-
-        for (std::size_t edge_id = 0; edge_id < net_.num_edges; ++edge_id) {
-            auto it = edge_level_map_.find(edge_id);
-            if (it == edge_level_map_.end())
-                continue;
-
-            std::size_t edge_level = it->second;
-            const auto& e = net_.edges[edge_id];
-
-            if (edge_level < level) {
-                processed_cands.insert(e.from);
-                if (e.from != e.to)
-                    processed_cands.insert(e.to);
-            } else {
-                unprocessed_cands.insert(e.from);
-                if (e.from != e.to)
-                    unprocessed_cands.insert(e.to);
-            }
-        }
-
-        data.vertices_with_processed_edges.assign(processed_cands.begin(),
-                                                   processed_cands.end());
-        data.vertices_with_unprocessed_edges.assign(unprocessed_cands.begin(),
-                                                     unprocessed_cands.end());
-    }
-}
-
-std::vector<std::size_t>
-boundary_computer::identify_vertices(const decomp_state& sg,
-                                     std::size_t level) const {
-    if (level >= level_boundary_cache_.size())
-        level = level_boundary_cache_.size() - 1;
-
-    const level_boundary_data& data = level_boundary_cache_[level];
-    const auto& with_processed = data.vertices_with_processed_edges;
-
-    // Thread-local bitmap: O(1) lookup, no heap allocation in steady state.
-    static thread_local std::vector<bool> has_unprocessed;
-    if (has_unprocessed.size() < net_.num_vertices)
-        has_unprocessed.resize(net_.num_vertices, false);
-
-    // Track which entries we set for sparse clear.
-    static thread_local std::vector<std::size_t> touched;
-    touched.clear();
+    // Thread-local scratch: marks are cleared sparsely after each call.
+    static thread_local std::vector<char> marked;
+    static thread_local std::vector<std::size_t> boundary;
+    if (marked.size() < net_.num_vertices)
+        marked.resize(net_.num_vertices, 0);
+    boundary.clear();
 
     for (std::size_t edge_id : sg.remaining_edges) {
-        if (edge_id >= net_.num_edges)
-            continue;
-        auto it = edge_level_map_.find(edge_id);
-        if (it == edge_level_map_.end())
-            continue;
-
-        if (it->second >= level) {
-            const auto& e = net_.edges[edge_id];
-            if (!has_unprocessed[e.from]) {
-                has_unprocessed[e.from] = true;
-                touched.push_back(e.from);
-            }
-            if (e.from != e.to && !has_unprocessed[e.to]) {
-                has_unprocessed[e.to] = true;
-                touched.push_back(e.to);
+        const std::size_t el = edge_level_[edge_id];
+        if (el == not_in_ordering || el < level)
+            continue; // processed edge (or not part of the ordering)
+        const edge& e = net_.edges[edge_id];
+        for (std::size_t v : {e.from, e.to}) {
+            if (!marked[v] && vertex_first_level_[v] < level) {
+                marked[v] = 1;
+                boundary.push_back(v);
             }
         }
     }
+    for (std::size_t v : boundary)
+        marked[v] = 0;
 
-    std::vector<std::size_t> result;
-    for (std::size_t vid : with_processed) {
-        if (vid < has_unprocessed.size() && has_unprocessed[vid])
-            result.push_back(vid);
-    }
-
-    // Sparse clear
-    for (std::size_t vid : touched)
-        has_unprocessed[vid] = false;
-
-    return result;
+    return canonicalize_partition(boundary, sg.uf_, sg.current_K, cache);
 }
 
 } // namespace teddy::graphrel

@@ -38,9 +38,9 @@ lbl_calculator::lbl_calculator(const graph& g,
                                std::size_t pool_size,
                                std::size_t extra_pool_size)
     : net_(detail::require_valid(g, who))
-    , cache_(g.num_vertices + g.num_edges)
     , ordering_(detail::require_valid_ordering(g, ordering, who))
     , boundary_(g, ordering_)
+    , cache_(bell_cache::size_for_boundary(boundary_.max_static_boundary()))
     , state_pool_(pool_size, extra_pool_size)
 {
     stats_ = statistics{};
@@ -62,6 +62,14 @@ double lbl_calculator::calculate() {
 
     // Layer 0: original network, probability 1.0
     decomp_state* initial = state_pool_.create(net_, net_.terminals);
+
+    // The only connectivity check on entry: every later state is produced by
+    // an operation that cannot disconnect the terminals unless it is checked
+    // there (vertex deletion) or ruled out (coloop test before edge deletion).
+    if (initial->is_failure_terminal(net_)) {
+        state_pool_.destroy(initial);
+        return 0.0;
+    }
 
     boundary_partition initial_part = boundary_.compute(*initial, 0, cache_);
     partition_key initial_key{

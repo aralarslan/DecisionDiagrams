@@ -30,6 +30,18 @@ namespace teddy::graphrel {
  * - B(n) = sum_{k=1}^n S(n,k)
  */
 class bell_cache {
+public:
+  /// Largest n whose Bell number B(n) fits in 64 bits (B(26) > 2^64).
+  /// Partition numbers for larger boundary sets would silently wrap.
+  static constexpr std::size_t max_supported_n = 25;
+
+  /// Cache size needed for boundary sets of up to @p max_boundary vertices,
+  /// clamped to [1, max_supported_n].
+  static std::size_t size_for_boundary(std::size_t max_boundary) {
+    return max_boundary < 1 ? 1
+           : (max_boundary > max_supported_n ? max_supported_n : max_boundary);
+  }
+
 private:
   std::vector<std::vector<std::uint64_t>>
       stirling_;                    ///< stirling_[n][k] = S(n,k)
@@ -39,7 +51,8 @@ private:
 public:
   /**
    * @brief Constructor - precomputes all values
-   * @param max_n Maximum n to precompute (typically 20)
+   * @param max_n Maximum n to precompute, in [1, max_supported_n]
+   * @throws std::invalid_argument if max_n is 0 or exceeds max_supported_n
    */
   explicit bell_cache(std::size_t max_n = 20);
 

@@ -22,6 +22,7 @@
 #include "teddy/graphrel/variable_ordering.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <set>
 #include <unordered_map>
 #include <vector>
@@ -88,12 +89,12 @@ public:
                 const std::vector<variable>& ordering,
                 teddy::bss_manager& mgr)
         : net_(g)
-        , cache_(g.num_vertices + g.num_edges)
         , ordering_(ordering)
         , mgr_(mgr)
         , edge_to_var_(g.num_edges, -1)
         , vertex_to_var_(g.num_vertices, -1)
         , boundary_(g, ordering_)
+        , cache_(bell_cache::size_for_boundary(boundary_.max_static_boundary()))
     {
         init_variable_index_mappings();
     }
@@ -107,6 +108,9 @@ public:
                             : mgr_.constant(1);
         }
         decomp_state initial(net_, net_.terminals);
+        // The only connectivity check on entry; see build_recursive().
+        if (initial.is_failure_terminal(net_))
+            return mgr_.constant(0);
         return build_recursive(std::move(initial), 0);
     }
 
@@ -151,9 +155,10 @@ private:
         if (state.is_success_terminal())
             return mgr_.constant(1);
 
-        union_find full_uf = state.build_full_connectivity(net_);
-        if (state.is_failure_terminal_with(full_uf))
-            return mgr_.constant(0);
+        // States reach here only if their terminals can still be connected:
+        // vertex deletions are checked where they happen, deleting a
+        // non-coloop edge cannot disconnect, contraction never does.
+        assert(!state.is_failure_terminal(net_));
 
         partition_key key = make_key(state, var_idx);
         auto cache_it = partition_cache_.find(key);
@@ -219,14 +224,10 @@ private:
         prune_unreachable_edges(state, net_);
         bdd_t high = build_recursive(std::move(state), var_idx + 1);
 
+        // e is not a coloop, so deleting it keeps the terminals connectable.
         delete_edge_in_place(fail_state, edge_id);
         prune_unreachable_edges(fail_state, net_);
-        bdd_t low;
-        if (fail_state.is_valid && !fail_state.is_failure_terminal(net_)) {
-            low = build_recursive(std::move(fail_state), var_idx + 1);
-        } else {
-            low = mgr_.constant(0);
-        }
+        bdd_t low = build_recursive(std::move(fail_state), var_idx + 1);
 
         return mgr_.make_ite(edge_to_var_[edge_id], high, low);
     }
@@ -258,14 +259,16 @@ private:
         return mgr_.make_ite(tidx, high, low);
     }
 
+    // Declaration order matters: boundary_ needs ordering_, cache_ is sized
+    // from boundary_.
     const graph& net_;
-    bell_cache cache_;
     const std::vector<variable>& ordering_;
     teddy::bss_manager& mgr_;
     std::vector<teddy::int32> edge_to_var_;
     std::vector<teddy::int32> vertex_to_var_;
-    std::unordered_map<partition_key, bdd_t> partition_cache_;
     boundary_computer boundary_;
+    bell_cache cache_;
+    std::unordered_map<partition_key, bdd_t> partition_cache_;
 };
 
 } // anonymous namespace

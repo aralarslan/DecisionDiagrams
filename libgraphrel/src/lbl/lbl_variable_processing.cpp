@@ -13,6 +13,7 @@
 #include "common/graph_operations.hpp"
 
 #include <algorithm>
+#include <cassert>
 
 namespace teddy::graphrel {
 
@@ -49,10 +50,9 @@ void lbl_calculator::process_variable(const decomp_state& sg, double parent_prob
         }
     }
 
-    // Build full connectivity UF once: O(V+E)
-    union_find full_uf = sg.build_full_connectivity(net_);
-    if (sg.is_failure_terminal_with(full_uf))
-        return;
+    // No per-state connectivity check here: states are only inserted when
+    // their terminals can still be connected (see calculate()).
+    assert(!sg.is_failure_terminal(net_));
 
     double component_reliability = (var.type == variable_type::edge)
                                    ? net_.edges[var.id].prob
@@ -84,29 +84,23 @@ void lbl_calculator::process_variable(const decomp_state& sg, double parent_prob
         }
 
         // Standard Shannon: R = p·R(contract) + (1-p)·R(delete)
+        // Neither child needs a connectivity check: e is not a coloop, so
+        // deleting it keeps the terminals connectable, and contracting an
+        // edge never disconnects anything (Imai et al. 1999, Lemma 1).
         double fail_prob = parent_prob * (1.0 - component_reliability);
         if (keep_branch(fail_prob)) {
             decomp_state* child_fail = state_pool_.create(sg);
             delete_edge_in_place(*child_fail, edge_id);
-            if (child_fail->is_valid && !child_fail->is_failure_terminal(net_)) {
-                prune_unreachable_edges(child_fail);
-                insert_or_merge(child_fail, fail_prob, var_idx + 1);
-            } else {
-                state_pool_.destroy(child_fail);
-            }
+            prune_unreachable_edges(child_fail);
+            insert_or_merge(child_fail, fail_prob, var_idx + 1);
         }
 
         double success_prob = parent_prob * component_reliability;
         if (keep_branch(success_prob)) {
             decomp_state* child_success = state_pool_.create(sg);
             contract_edge_in_place(*child_success, edge_id, net_);
-            if (child_success->is_valid &&
-                !child_success->is_failure_terminal(net_)) {
-                prune_unreachable_edges(child_success);
-                insert_or_merge(child_success, success_prob, var_idx + 1);
-            } else {
-                state_pool_.destroy(child_success);
-            }
+            prune_unreachable_edges(child_success);
+            insert_or_merge(child_success, success_prob, var_idx + 1);
         }
         return;
     }
