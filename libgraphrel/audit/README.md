@@ -10,12 +10,30 @@ libgraphrel contains two different algorithms, and they must be judged against d
 | Entry point | Algorithm | Reference |
 |---|---|---|
 | `calculate_reliability` (`src/lbl/`) | Layer-by-layer recursive decomposition (LBL) | **Wu & Sun (2024)**, RESS 244:109968 — the paper's contribution |
-| `build_diagram` (`src/diagram/`) | Classic boundary-set (BS) based BDD | Hardy, Lucet & Limnios (2007) [20]; BS isomorphism from Carlier & Lucet [32] / Imai et al. [33]; imperfect vertices per Kuo et al. [19] / Pan et al. [31]. Wu & Sun only summarise it in §2.3 as their **baseline**. |
+| `build_diagram` (`src/diagram/`) | Classic boundary-set (BS) based BDD, built top-down | Hardy, Lucet & Limnios (2007) [WS 20]. Wu & Sun only summarise it in §2.3 as their **baseline**. |
+| Shared: `partition.cpp`, `bell_cache.cpp`, `boundary.cpp`, `graph_operations.cpp` | BS partitions, class numbering, loop/coloop rules | **Carlier & Lucet (1996)** [WS 32]; **Imai, Sekine & Imai (1999)** [WS 33] |
+| Vertex-failure semantics and variable order (both paths) | k-NR-IV, R_EV | **Kawahara, Sonoda, Inoue & Kasahara (2019)** [WS 24] |
 
-So the Wu & Sun preconditions below are checked against **LBL only**. `diagram.hpp` and
-`diagram.cpp` describe the BDD builder as "Wu & Sun 2024, BS-BDD". That attribution should point
-to Hardy et al. instead. The BDD findings (1.1, 1.2) still need checking against those
-references, which I don't have yet.
+"[WS n]" means reference n in Wu & Sun. The Wu & Sun preconditions are checked against **LBL
+only**.
+
+`diagram.hpp` and `diagram.cpp` describe the BDD builder as "Wu & Sun 2024, BS-BDD"; that should
+cite Hardy et al. I haven't seen Hardy et al. itself. The BDD builder is checked below against the
+semantics and BS definitions in Carlier & Lucet, Imai et al. and Kawahara et al. instead.
+
+### Checks against Carlier & Lucet, Imai et al. and Kawahara et al.
+
+| What | Reference | Status |
+|---|---|---|
+| Class number from partition (`partition_to_number`) and back (`number_to_partition`) | C&L §4.7, Algorithms 2 and 1 | **Faithful.** I checked it against a literal transcription of Algorithm 2 over all 142,417 partitions with \|F\| ≤ 10. It is bijective onto [1, B(F)], and Algorithm 1 inverts it (`sweep.cpp numbering`). |
+| Stirling recursion \|A(i,j)\| = j·\|A(i−1,j)\| + \|A(i−1,j−1)\| | C&L §4.8 | Faithful. C&L only treat F_max ≤ 12; the library never checks the uint64 overflow at F ≥ 26 (1.6). |
+| Loop → R(G\e); coloop → p·R(G/e); otherwise Shannon | Imai Lemma 1 | Faithful. The library applies the K-terminal generalisation: a coloop is an edge whose deletion disconnects the terminals. |
+| State = boundary set F, up/down of each boundary vertex, partition of the up vertices, K-mark per block | C&L §5.2 (K-terminal with failed vertices) | Same information, encoded differently. C&L's F_k is **static**, fixed by the vertex numbering, with explicit up/down flags. The library computes the boundary **per state**: "down" shows up as absence, and so does an up vertex whose remaining edges were pruned. Merging those two cases is correct, because neither can carry connectivity any more. |
+| Two minors are isomorphic iff their elimination partitions are equal, **given the same remaining edge set Ē_i** | Imai Theorem 1 (front V_i defined per level) | **Not checked by the code.** Pruning and vertex deletion mean states at one level can have different remaining edge sets, so Theorem 1 doesn't cover the library's key. Fuzzing found no counterexample (0 / 30,000), but none of these references proves it. Make it a documented invariant, and add a debug assertion that compares the remaining unprocessed edge sets on every key hit. |
+| Failed vertex ⇒ every incident edge is 0: R_EV = R_E \|_{e←0 ∀ e∈E_v, v down} | Kawahara §3.1 | LBL: correct. **BDD: violated for p(e) = 1** (1.1). The perfect-edge shortcut sets e to 1 even when an endpoint is down. |
+| Vertex variable placed just before the first edge in E_v | Kawahara §3.1; Wu & Sun §2.3 | The library's BFS does exactly this, e.g. v1 < v2 < e1 < v3 < e2 < e3 on the Fig. 1 bridge. |
+| Ordering quality: F_max should be as small as possible; BFS with random swaps accepted when ΔF_max < 0 | C&L §4.9; Imai §2.2 (Theorem 2: width ≤ B_l); Kawahara §4.4 | **Only plain BFS is provided, with no improvement step.** On meshes this is the cause of the gap to Wu & Sun's Table 2 (see the reproduction below). F_max alone isn't a good enough target: on 10×10, BFS and the row sweep both have F_max = 11, but G^max is 340,599 vs 58,039. |
+| Graph connected; 2 ≤ \|K\| | C&L §2; Imai §2.1; Kawahara §2.1; Wu & Sun §2.1 | Not enforced (1.2). |
 
 ### Wu & Sun (2024) preconditions and whether the code enforces them
 
@@ -55,31 +73,40 @@ correct-but-risky, or removed.
 ### Reproducing the paper's numbers with LBL
 
 Every reliability value I could reproduce matches Wu & Sun **exactly**. The peak layer sizes
-(G^max, Table 2 column B¹) do **not**: the library keeps more states per layer than the paper.
+(G^max, Table 2 column B¹) with the library's default BFS ordering do **not**. With a row-by-row
+sweep ordering they come within 1.08–1.25× of the paper.
 
-| Network | Paper R | libgraphrel R | Paper B¹ (G^max) | libgraphrel G^max | Paper time | libgraphrel time |
-|---|---|---|---|---|---|---|
-| Bridge, Fig. 1–3 | 0.760078728 | 0.760078728 | layers 1,1,2,3,4,5,4,3,1 | layers 1,1,2,3,4,5,3,3,1 | — | 0 s |
-| N9 (2×20 mesh) | 0.230160 | 0.230160 | 4 | 5 | 0.0 s | 0.0 s |
-| N6 (3×10 mesh) | 0.609632 | 0.609632 | 12 | 19 | 0.0 s | 0.0 s |
-| N7 (3×12 mesh) | 0.579399 | 0.579399 | 12 | 19 | 0.0 s | 0.0 s |
-| N8 (5×5 mesh) | 0.711988 | 0.711988 | 118 | 253 | 0.0 s | 0.0 s |
-| N20 (10×10 mesh) | 0.714299 | 0.714299 | 53,924 | **340,599** | 42.9 s | 200.8 s, 882 MB |
-| N27 (complete K₁₂) | 0.810000 | 0.810000 | 816,465 | 42,665 | 72.9 s | 2.2 s |
+| Network | Paper R | libgraphrel R | Paper B¹ (G^max) | G^max, library BFS | G^max, row sweep | Paper time | libgraphrel time (BFS / sweep) |
+|---|---|---|---|---|---|---|---|
+| Bridge, Fig. 1–3 | 0.760078728 | 0.760078728 | layers 1,1,2,3,4,5,4,3,1 | layers 1,1,2,3,4,5,3,3,1 | — | — | 0 s |
+| N9 (2×20 mesh) | 0.230160 | 0.230160 | 4 | 5 | 5 | 0.0 s | 0.0 s |
+| N6 (3×10 mesh) | 0.609632 | 0.609632 | 12 | 19 | 15 | 0.0 s | 0.0 s |
+| N7 (3×12 mesh) | 0.579399 | 0.579399 | 12 | 19 | 15 | 0.0 s | 0.0 s |
+| N8 (5×5 mesh) | 0.711988 | 0.711988 | 118 | 253 | 146 | 0.0 s | 0.0 s |
+| N20 (10×10 mesh) | 0.714299 | 0.714299 | 53,924 | **340,599** | **58,039** | 42.9 s | 200.8 s / 91.0 s |
+| N27 (complete K₁₂) | 0.810000 | 0.810000 | 816,465 | 42,665 | — | 72.9 s | 2.2 s |
 
 All edges and vertices are 0.9, with the two terminals at the largest distance apart (opposite mesh
 corners). I identified N6–N9 from |V| and |E| in Table 1; the exact match of R confirms the
-identification.
+identification. "Row sweep" means: vertices row by row along the short side, each followed by its
+edges to earlier vertices. That respects vertex priority and is the street-network numbering of
+C&L §4.9 / Fig. 3. Script: `sweep.cpp`.
 
 - On the bridge, the library is at or below the paper layer by layer. Coloop detection and
-  dead-component pruning (not in the paper) remove one state at layer 6.
+  dead-component pruning (Imai Lemma 1; not in Wu & Sun) remove one state at layer 6.
 - On K₁₂ it is 19× *below* the paper, again thanks to coloop detection and pruning.
-- On meshes it is 1.25–6.3× *above* the paper. BFS tie-breaking doesn't explain it: the best of
-  40 edge orders on 5×5 is still 253, against 118. On the 20×2 ladder I dumped every state at the
-  peak layer and all 5 are genuinely different (they differ in which boundary vertices survived, or
-  which block holds the terminal). So the gap comes from how the boundary set is defined or how
-  states are counted, not from a correctness error. **I couldn't settle this from the paper
-  alone.** It defers the BS definition to [20] and [33], so those papers are needed to finish this.
+- On meshes the library's corner-seeded BFS is 1.25–6.3× *above* the paper. The cause is the
+  **ordering**, not the state definition:
+  - BFS from a corner sweeps diagonally, and those fronts allow many more partitions than a row
+    front of the same size.
+  - With a row sweep the gap shrinks to 1.08× on N20 and 1.25× on the small meshes. N20's run
+    time halves at the same time.
+  - The small residual is plausibly BFS tie-breaking in the authors' code, which the paper doesn't
+    specify. Every state I inspected is genuinely distinct.
+  - Practical consequence: the library's ordering heuristic is the main thing standing between it
+    and the paper's state counts. C&L §4.9 and Kawahara §4.4 both say the same about ordering.
+    Sweeping along the *long* side is catastrophic (2×20: 1,048,576 states, F_max = 21), so any
+    sweep must pick its direction by F_max.
 - The paper's large meshes N25/N26 (1000×10 and 1200×10, 28,990 and 34,790 layers) need 540 MB
   in the paper. In libgraphrel, the `bell_cache` alone needs (L+1)(L+2)/2 × 8 bytes, which is
   **3.4 GB for N25 and 4.8 GB for N26**. The per-level boundary tables add roughly another 1 GB.
@@ -88,7 +115,8 @@ identification.
 
 ## How this was checked
 
-- I read every source and header, and the Wu & Sun paper.
+- I read every source and header, the Wu & Sun paper, and the three supporting papers: Carlier &
+  Lucet 1996, Imai et al. 1999 and Kawahara et al. 2019.
 - I compiled with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Wmissing-declarations`.
   There were only 15 warnings, mostly `int`/`size_t` mixing in `partition.cpp`.
 - **Differential fuzzing** (`fuzz.cpp` in this folder). I generated random small graphs (3–7
@@ -102,7 +130,8 @@ identification.
   It also runs LBL with DFS, random vertex-priority orderings and unconstrained random orderings.
 - I ran the same fuzz under ASan and UBSan. It found **no memory errors and no undefined behaviour**.
 - **Targeted repros** (`probe.cpp`) for each finding below, plus timing and peak-memory scaling runs.
-- Paper reproduction (`paper.cpp`, `order_sens.cpp`) and a callgrind profile on a 7×7 grid.
+- Paper reproduction and reference checks (`paper.cpp`, `order_sens.cpp`, `sweep.cpp`), and a
+  callgrind profile on a 7×7 grid.
 
 **Headline.** 10,000 graphs per mode:
 
@@ -134,7 +163,9 @@ PAPER=1 ./fuzz 10000 && PAPER=1 PERFECT=1 ./fuzz 10000 && KMIN2=1 ./fuzz 10000
 
 ### 1.1 BDD connects through a failed vertex using perfect edges *(BDD builder; medium)*
 `src/diagram/diagram.cpp:177-187`. The perfect-edge shortcut (`prob >= 1.0` → contract) is an
-optimisation of this implementation; it isn't in any of the references. It runs **before** the
+optimisation of this implementation; it isn't in any of the references. It breaks the k-NR-IV
+semantics of Kawahara et al. §3.1, where every edge incident to an unavailable vertex is forced
+to 0. It runs **before** the
 ghost-edge check, so an edge already removed by `delete_vertex_in_place` gets contracted anyway,
 which joins its endpoints through the failed vertex. This happens within Wu & Sun-style assumptions
 (connected graph, |K| = 2) whenever some edge has p = 1 exactly: 545 of 10,000 cases.
@@ -426,8 +457,10 @@ as `copy + in_place` in the tests.
    - Drop the epsilon (1.5) and fix the parser (1.7).
    - In the BDD builder, swap the ghost and perfect-edge checks (1.1).
    - Add the fuzz test in `PAPER=1` and `KMIN2=1` modes, and turn tests on in CI.
-2. **Find the G^max gap against Table 2.** Compare the boundary-set definition with Hardy et al.
-   [20] / Imai et al. [33], starting from the 5×5 mesh (118 vs 253).
+2. **Better ordering.** Offer a sweep/front-minimising ordering next to BFS, in the spirit of the
+   C&L §4.9 improvement loop, but scoring candidates on more than F_max, e.g. a short simulated
+   layer count. This closes most of the G^max gap to Wu & Sun's Table 2 (N20: 340,599 → 58,039
+   states). Fix `estimate_max_boundary_size` (2.4) first so the scoring is cheap.
 3. **Cheap performance wins:** size `bell_cache` by F (2.1), make `precompute` incremental (2.2),
    remove the redundant failure checks (2.3), fix the ordering helpers (2.4). Together these turn
    the ladder from quadratic back to roughly linear.
