@@ -4,6 +4,7 @@ on:
   push:
     branches: [main, devel]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
@@ -16,24 +17,67 @@ jobs:
           - name: Windows MSVC
             os: windows-latest
             preset: windows-msvc-release
+            tests: false
 
           - name: Linux GCC
             os: ubuntu-latest
             preset: linux-release
+            build_dir: build
+            tests: true
 
           - name: Linux Clang
             os: ubuntu-latest
             preset: linux-clang-release
+            build_dir: build/clang-release
+            tests: true
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Ninja (Linux)
+      - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get install -y ninja-build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libboost-test-dev libfmt-dev
 
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }}
+        run: >
+          cmake --preset ${{ matrix.preset }}
+          -DLIBTEDDY_BUILD_TESTS=${{ matrix.tests && 'ON' || 'OFF' }}
 
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
+
+      # The libteddy core/reliability suites take well over 10 minutes, so CI
+      # runs the graphrel suites only (a few seconds).
+      - name: Test (graphrel)
+        if: matrix.tests
+        run: ctest --test-dir ${{ matrix.build_dir }} -R graphrel --output-on-failure
+
+  sanitizers:
+    name: Linux GCC ASan+UBSan (graphrel)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libboost-test-dev libfmt-dev
+
+      - name: Configure
+        run: >
+          cmake -S . -B build/asan -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DLIBTEDDY_BUILD_TESTS=ON
+          -DLIBTEDDY_BUILD_GRAPHREL=ON
+          -DLIBTEDDY_USE_SANITIZERS=ON
+
+      - name: Build
+        run: cmake --build build/asan --target graphrel-test
+
+      - name: Test
+        env:
+          # UBSan only reports by default; make any finding fail the job.
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build/asan -R graphrel --output-on-failure
