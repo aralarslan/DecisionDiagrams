@@ -1,8 +1,11 @@
 #include "teddy/graphrel/graph_io.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <fstream>
 #include <iomanip>
+#include <limits>
+#include <locale>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -23,16 +26,64 @@ ParseError::ParseError(std::size_t line, const std::string &message)
 
 namespace {
 
-/// Trim leading whitespace (in-place).
-std::string_view trim_left(std::string_view sv) {
-  auto pos = sv.find_first_not_of(" \t\r");
-  return pos == std::string_view::npos ? std::string_view{} : sv.substr(pos);
+constexpr std::string_view whitespace = " \t\r";
+
+/// Split a line into whitespace-separated tokens.
+std::vector<std::string_view> tokenize(std::string_view line) {
+  std::vector<std::string_view> tokens;
+  std::size_t pos = line.find_first_not_of(whitespace);
+  while (pos != std::string_view::npos) {
+    std::size_t end = line.find_first_of(whitespace, pos);
+    if (end == std::string_view::npos)
+      end = line.size();
+    tokens.push_back(line.substr(pos, end - pos));
+    pos = line.find_first_not_of(whitespace, end);
+  }
+  return tokens;
 }
 
-/// Return true if the line is blank or a comment.
-bool is_skip_line(std::string_view sv) {
-  sv = trim_left(sv);
-  return sv.empty() || sv.front() == 'c';
+/// Parse a non-negative integer; the whole token must be consumed.
+std::size_t parse_index(std::string_view token, std::size_t line,
+                        const char *what) {
+  std::size_t value = 0;
+  const char *first = token.data();
+  const char *last = token.data() + token.size();
+  auto [ptr, ec] = std::from_chars(first, last, value);
+  if (ec != std::errc{} || ptr != last)
+    throw ParseError(line, std::string("invalid ") + what + " '" +
+                               std::string(token) +
+                               "' (expected a non-negative integer)");
+  return value;
+}
+
+/// Parse a probability in [0, 1]; the whole token must be consumed.
+/// Uses the classic locale so the decimal separator is always '.'.
+double parse_probability(std::string_view token, std::size_t line,
+                         const char *what) {
+  std::istringstream iss{std::string(token)};
+  iss.imbue(std::locale::classic());
+  double value = 0.0;
+  iss >> value;
+  if (!iss || iss.peek() != std::char_traits<char>::eof())
+    throw ParseError(line, std::string("invalid ") + what + " '" +
+                               std::string(token) + "' (expected a number)");
+  if (!(value >= 0.0 && value <= 1.0)) // also rejects NaN
+    throw ParseError(line, std::string(what) + " '" + std::string(token) +
+                               "' out of range [0, 1]");
+  return value;
+}
+
+void expect_token_count(const std::vector<std::string_view> &tokens,
+                        std::size_t min, std::size_t max, std::size_t line,
+                        const char *syntax) {
+  if (tokens.size() < min || tokens.size() > max)
+    throw ParseError(line, std::string("expected '") + syntax + "'");
+}
+
+std::string range_message(const char *what, std::size_t value,
+                          std::size_t bound) {
+  return std::string(what) + " " + std::to_string(value) +
+         " out of range [0, " + std::to_string(bound) + ")";
 }
 
 } // namespace
@@ -42,7 +93,6 @@ bool is_skip_line(std::string_view sv) {
 // ---------------------------------------------------------------------------
 
 graph read_graph(std::istream &input) {
-  // State accumulated during parsing
   bool saw_problem = false;
   bool saw_terminals = false;
   std::size_t num_vertices = 0;
@@ -55,7 +105,6 @@ graph read_graph(std::istream &input) {
     double prob;
   };
   std::vector<RawEdge> raw_edges;
-
   std::vector<std::size_t> terminals;
   std::vector<std::pair<std::size_t, double>> vertex_overrides;
 
@@ -65,42 +114,42 @@ graph read_graph(std::istream &input) {
   while (std::getline(input, line)) {
     ++line_number;
 
-    if (is_skip_line(line))
-      continue;
+    const std::vector<std::string_view> tokens = tokenize(line);
+    if (tokens.empty() || tokens.front().front() == 'c')
+      continue; // blank line or comment
 
-    std::istringstream iss(line);
-    char prefix{};
-    iss >> prefix;
+    if (tokens.front().size() != 1)
+      throw ParseError(line_number, "unknown line type '" +
+                                        std::string(tokens.front()) + "'");
 
-    switch (prefix) {
+    switch (tokens.front().front()) {
 
     case 'p': {
       if (saw_problem)
         throw ParseError(line_number, "duplicate 'p' line");
+      const char *syntax =
+          "p reliability <V> <E> [default_edge_prob [default_vertex_prob]]";
+      expect_token_count(tokens, 4, 6, line_number, syntax);
+      if (tokens[1] != "reliability")
+        throw ParseError(line_number, "expected 'p reliability ...', got 'p " +
+                                          std::string(tokens[1]) + "'");
 
-      std::string kind;
-      iss >> kind;
-      if (kind != "reliability")
+      num_vertices = parse_index(tokens[2], line_number, "vertex count");
+      num_edges = parse_index(tokens[3], line_number, "edge count");
+      if (num_vertices > graph::max_vertices)
         throw ParseError(line_number,
-                         "expected 'p reliability ...', got 'p " + kind + "'");
+                         "vertex count " + std::to_string(num_vertices) +
+                             " exceeds the supported maximum " +
+                             std::to_string(graph::max_vertices));
+      if (tokens.size() >= 5)
+        default_edge_rel =
+            parse_probability(tokens[4], line_number, "default edge probability");
+      if (tokens.size() >= 6)
+        default_vertex_rel = parse_probability(tokens[5], line_number,
+                                               "default vertex probability");
 
-      if (!(iss >> num_vertices >> num_edges))
-        throw ParseError(line_number,
-                         "expected 'p reliability <V> <E> [defaults]'");
-
-      // Optional defaults
-      if (iss >> default_edge_rel) {
-        if (default_edge_rel < 0.0 || default_edge_rel > 1.0)
-          throw ParseError(line_number,
-                           "default edge prob out of range [0, 1]");
-        if (iss >> default_vertex_rel) {
-          if (default_vertex_rel < 0.0 || default_vertex_rel > 1.0)
-            throw ParseError(line_number,
-                             "default vertex prob out of range [0, 1]");
-        }
-      }
-
-      raw_edges.reserve(num_edges);
+      // Don't trust the declared count for a large up-front allocation.
+      raw_edges.reserve(std::min<std::size_t>(num_edges, 1u << 16));
       saw_problem = true;
       break;
     }
@@ -110,24 +159,16 @@ graph read_graph(std::istream &input) {
         throw ParseError(line_number, "'t' line before 'p' line");
       if (saw_terminals)
         throw ParseError(line_number, "duplicate 't' line");
-
-      std::size_t v;
-      while (iss >> v) {
-        if (v >= num_vertices)
-          throw ParseError(line_number,
-                           "terminal vertex " + std::to_string(v) +
-                               " out of range [0, " +
-                               std::to_string(num_vertices) + ")");
-        terminals.push_back(v);
-      }
-
-      if (terminals.empty())
+      if (tokens.size() < 2)
         throw ParseError(line_number, "terminal set must not be empty");
 
-      std::sort(terminals.begin(), terminals.end());
-      terminals.erase(std::unique(terminals.begin(), terminals.end()),
-                      terminals.end());
-
+      for (std::size_t i = 1; i < tokens.size(); ++i) {
+        std::size_t v = parse_index(tokens[i], line_number, "terminal vertex");
+        if (v >= num_vertices)
+          throw ParseError(line_number,
+                           range_message("terminal vertex", v, num_vertices));
+        terminals.push_back(v);
+      }
       saw_terminals = true;
       break;
     }
@@ -135,23 +176,21 @@ graph read_graph(std::istream &input) {
     case 'e': {
       if (!saw_problem)
         throw ParseError(line_number, "'e' line before 'p' line");
+      expect_token_count(tokens, 3, 4, line_number, "e <from> <to> [prob]");
 
-      std::size_t from, to;
-      if (!(iss >> from >> to))
-        throw ParseError(line_number, "expected 'e <from> <to> [prob]'");
-
-      if (from >= num_vertices || to >= num_vertices)
+      std::size_t from = parse_index(tokens[1], line_number, "edge endpoint");
+      std::size_t to = parse_index(tokens[2], line_number, "edge endpoint");
+      if (from >= num_vertices)
         throw ParseError(line_number,
-                         "edge endpoint out of range [0, " +
-                             std::to_string(num_vertices) + ")");
+                         range_message("edge endpoint", from, num_vertices));
+      if (to >= num_vertices)
+        throw ParseError(line_number,
+                         range_message("edge endpoint", to, num_vertices));
 
-      double rel = default_edge_rel;
-      if (iss >> rel) {
-        if (rel < 0.0 || rel > 1.0)
-          throw ParseError(line_number,
-                           "edge prob out of range [0, 1]");
-      }
-
+      double rel = tokens.size() == 4
+                       ? parse_probability(tokens[3], line_number,
+                                           "edge probability")
+                       : default_edge_rel;
       raw_edges.push_back({from, to, rel});
       break;
     }
@@ -159,30 +198,21 @@ graph read_graph(std::istream &input) {
     case 'v': {
       if (!saw_problem)
         throw ParseError(line_number, "'v' line before 'p' line");
+      expect_token_count(tokens, 3, 3, line_number, "v <vertex> <prob>");
 
-      std::size_t vertex;
-      double rel;
-      if (!(iss >> vertex >> rel))
-        throw ParseError(line_number,
-                         "expected 'v <vertex> <prob>'");
-
+      std::size_t vertex = parse_index(tokens[1], line_number, "vertex");
       if (vertex >= num_vertices)
         throw ParseError(line_number,
-                         "vertex " + std::to_string(vertex) +
-                             " out of range [0, " +
-                             std::to_string(num_vertices) + ")");
-
-      if (rel < 0.0 || rel > 1.0)
-        throw ParseError(line_number,
-                         "vertex prob out of range [0, 1]");
-
+                         range_message("vertex", vertex, num_vertices));
+      double rel =
+          parse_probability(tokens[2], line_number, "vertex probability");
       vertex_overrides.emplace_back(vertex, rel);
       break;
     }
 
     default:
-      throw ParseError(line_number,
-                        std::string("unknown line type '") + prefix + "'");
+      throw ParseError(line_number, "unknown line type '" +
+                                        std::string(tokens.front()) + "'");
     }
   }
 
@@ -198,19 +228,13 @@ graph read_graph(std::istream &input) {
                      "expected " + std::to_string(num_edges) + " edges, got " +
                          std::to_string(raw_edges.size()));
 
-  // Build graph
   graph g(num_vertices, num_edges);
-
-  std::fill(g.vertex_probs.begin(), g.vertex_probs.end(),
-            default_vertex_rel);
-
+  std::fill(g.vertex_probs.begin(), g.vertex_probs.end(), default_vertex_rel);
   for (auto &[vertex, rel] : vertex_overrides)
     g.vertex_probs[vertex] = rel;
-
   for (auto &[from, to, rel] : raw_edges)
     g.add_edge(from, to, rel);
-
-  g.terminals = std::move(terminals);
+  g.set_terminals(std::move(terminals)); // sorts and removes duplicates
 
   return g;
 }
@@ -252,16 +276,27 @@ void write_graph(std::ostream &output, const graph &g,
     output << " " << v;
   output << "\n";
 
-  // Edges — always write explicit prob for round-trip fidelity
-  output << std::setprecision(15);
+  // Probabilities are written with max_digits10 digits so that reading the
+  // file back reproduces every double exactly. Restore the caller's stream
+  // state afterwards.
+  const std::ios_base::fmtflags old_flags = output.flags();
+  const std::streamsize old_precision = output.precision();
+  const std::locale old_locale = output.imbue(std::locale::classic());
+  output << std::defaultfloat
+         << std::setprecision(std::numeric_limits<double>::max_digits10);
+
   for (const auto &e : g.edges)
     output << "e " << e.from << " " << e.to << " " << e.prob << "\n";
 
-  // Vertex reliabilities — only write non-1.0 vertices
+  // Vertex probabilities — only write non-1.0 vertices
   for (std::size_t i = 0; i < g.num_vertices; ++i) {
     if (g.vertex_probs[i] != 1.0)
       output << "v " << i << " " << g.vertex_probs[i] << "\n";
   }
+
+  output.imbue(old_locale);
+  output.precision(old_precision);
+  output.flags(old_flags);
 }
 
 // ---------------------------------------------------------------------------
@@ -276,6 +311,9 @@ void write_graph(std::string_view path, const graph &g,
     throw std::runtime_error("Cannot open file: " + path_str);
   }
   write_graph(file, g, comment);
+  if (!file) {
+    throw std::runtime_error("Error while writing file: " + path_str);
+  }
 }
 
 } // namespace teddy::graphrel

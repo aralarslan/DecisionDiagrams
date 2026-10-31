@@ -10,6 +10,7 @@
 #include "lbl_detail.hpp"
 #include "teddy/graphrel/reliability.hpp"
 #include "common/graph_operations.hpp"
+#include "common/validation.hpp"
 
 #include <algorithm>
 #include <stdexcept>
@@ -18,27 +19,31 @@ namespace teddy::graphrel {
 
 // ── Constructors ────────────────────────────────────────────────────────────
 
+namespace {
+constexpr const char* who = "calculate_reliability";
+}
+
 lbl_calculator::lbl_calculator(const graph& g,
                                std::size_t pool_size,
                                std::size_t extra_pool_size)
-    : lbl_calculator(g, generate_variable_ordering(g), pool_size, extra_pool_size)
+    : lbl_calculator(g,
+                     generate_variable_ordering(detail::require_valid(g, who)),
+                     pool_size, extra_pool_size)
 {}
 
+// The graph and ordering are validated in the initializer list, before any
+// member that indexes into them (cache_, boundary_) is constructed.
 lbl_calculator::lbl_calculator(const graph& g,
                                const std::vector<variable>& ordering,
                                std::size_t pool_size,
                                std::size_t extra_pool_size)
-    : net_(g)
+    : net_(detail::require_valid(g, who))
     , cache_(g.num_vertices + g.num_edges)
-    , ordering_(ordering)
+    , ordering_(detail::require_valid_ordering(g, ordering, who))
     , boundary_(g, ordering_)
     , state_pool_(pool_size, extra_pool_size)
 {
     stats_ = statistics{};
-
-    if (!g.validate()) {
-        throw std::invalid_argument("lbl_calculator: invalid graph");
-    }
 }
 
 // ── Main calculation loop ────────────────────────────────────────────────────
@@ -46,7 +51,14 @@ lbl_calculator::lbl_calculator(const graph& g,
 double lbl_calculator::calculate() {
     stats_ = statistics{};
     early_success_probability_ = 0.0;
+    dropped_probability_ = 0.0;
     double total_load_factor = 0.0;
+
+    // |K| = 1: the terminal set is connected iff that vertex works. Handled
+    // up front because the layer loop treats |K| < 2 as already connected.
+    if (net_.terminals.size() == 1) {
+        return net_.vertex_probs[net_.terminals.front()];
+    }
 
     // Layer 0: original network, probability 1.0
     decomp_state* initial = state_pool_.create(net_, net_.terminals);
@@ -155,6 +167,35 @@ double calculate_reliability(const graph& g,
                              const std::vector<variable>& ordering) {
     lbl_calculator calc(g, ordering);
     return calc.calculate();
+}
+
+namespace {
+reliability_bounds bounds_from(lbl_calculator& calc, double prune_threshold) {
+    calc.set_prune_threshold(prune_threshold);
+    const double lower = calc.calculate();
+    return {lower, std::min(1.0, lower + calc.dropped_probability())};
+}
+
+void check_threshold(double prune_threshold) {
+    if (!(prune_threshold >= 0.0 && prune_threshold < 1.0))
+        throw std::invalid_argument(
+            "calculate_reliability_bounds: prune_threshold must be in [0, 1)");
+}
+} // namespace
+
+reliability_bounds calculate_reliability_bounds(const graph& g,
+                                                double prune_threshold) {
+    check_threshold(prune_threshold);
+    lbl_calculator calc(g);
+    return bounds_from(calc, prune_threshold);
+}
+
+reliability_bounds calculate_reliability_bounds(const graph& g,
+                                                const std::vector<variable>& ordering,
+                                                double prune_threshold) {
+    check_threshold(prune_threshold);
+    lbl_calculator calc(g, ordering);
+    return bounds_from(calc, prune_threshold);
 }
 
 } // namespace teddy::graphrel

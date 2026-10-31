@@ -20,6 +20,7 @@
  */
 
 #include "teddy/graphrel/variable_ordering.hpp"
+#include "common/validation.hpp"
 
 #include <algorithm>
 #include <functional>
@@ -140,6 +141,7 @@ std::vector<variable> generate_variable_ordering(const graph &g) {
    * @param g Graph structure
    * @return Variable ordering following vertex priority principle
    */
+  detail::require_valid(g, "generate_variable_ordering");
   std::vector<variable> ordering;
   ordering.reserve(g.num_vertices + g.num_edges);
 
@@ -234,6 +236,7 @@ std::vector<variable> generate_variable_ordering(const graph &g) {
 
 std::vector<variable> generate_variable_ordering(const graph &g,
                                                  ordering_strategy strategy) {
+  detail::require_valid(g, "generate_variable_ordering");
   switch (strategy) {
   case ordering_strategy::bfs:
     return generate_variable_ordering(g);

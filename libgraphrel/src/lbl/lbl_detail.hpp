@@ -34,9 +34,19 @@ public:
                    std::size_t pool_size = 10000,
                    std::size_t extra_pool_size = 5000);
 
+    // boundary_ keeps a reference to ordering_, so copies/moves would dangle.
+    lbl_calculator(const lbl_calculator&) = delete;
+    lbl_calculator& operator=(const lbl_calculator&) = delete;
+
     double calculate();
 
     void set_log_stream(std::ostream* out) { log_stream_ = out; }
+
+    /// Drop branches with probability <= @p threshold (0 = exact, the default).
+    void set_prune_threshold(double threshold) { prune_threshold_ = threshold; }
+
+    /// Total probability of branches dropped by the last calculate() call.
+    double dropped_probability() const { return dropped_probability_; }
 
     struct statistics {
         std::size_t max_layer_size = 0;
@@ -64,6 +74,7 @@ private:
 
     using layer_map = flat_hash_map<partition_key, lbl_entry>;
 
+    bool keep_branch(double probability);
     void insert_or_merge(decomp_state* sg, double probability,
                          std::size_t next_level);
     void process_variable(const decomp_state& sg, double parent_prob,
@@ -80,6 +91,8 @@ private:
     mutable statistics stats_;
     std::ostream* log_stream_ = nullptr;
     double early_success_probability_ = 0.0;
+    double prune_threshold_ = 0.0;
+    double dropped_probability_ = 0.0;
 };
 
 // Encode K-membership as a bitmask (max 64 blocks)

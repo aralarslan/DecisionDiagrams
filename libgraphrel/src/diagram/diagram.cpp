@@ -16,6 +16,7 @@
 #include "common/partition.hpp"
 #include "common/partition_key.hpp"
 #include "common/pruning.hpp"
+#include "common/validation.hpp"
 #include "common/bell_cache.hpp"
 #include "common/decomp_state.hpp"
 #include "teddy/graphrel/variable_ordering.hpp"
@@ -98,6 +99,13 @@ public:
     }
 
     bdd_t build() {
+        // |K| = 1: the function is just "that vertex works". Handled up front
+        // because build_recursive treats |K| < 2 as already connected.
+        if (net_.terminals.size() == 1) {
+            const teddy::int32 var = vertex_to_var_[net_.terminals.front()];
+            return var >= 0 ? mgr_.make_ite(var, mgr_.constant(1), mgr_.constant(0))
+                            : mgr_.constant(1);
+        }
         decomp_state initial(net_, net_.terminals);
         return build_recursive(std::move(initial), 0);
     }
@@ -174,15 +182,17 @@ private:
 
     bdd_t process_edge_variable(decomp_state state, std::size_t edge_id,
                                  std::size_t var_idx) {
-        // Perfect edge: always succeeds, no BDD node
-        if (net_.edges[edge_id].prob >= 1.0) {
-            contract_edge_in_place(state, edge_id, net_);
+        // Ghost edge: already removed by vertex failure. Must come before the
+        // perfect-edge shortcut: an edge incident to a failed vertex is
+        // unusable even if p(e) = 1 (Kawahara et al. 2019, §3.1).
+        if (!std::binary_search(state.remaining_edges.begin(),
+                                state.remaining_edges.end(), edge_id)) {
             return build_recursive(std::move(state), var_idx + 1);
         }
 
-        // Ghost edge: already removed by vertex failure
-        if (!std::binary_search(state.remaining_edges.begin(),
-                                state.remaining_edges.end(), edge_id)) {
+        // Perfect edge: always succeeds, no BDD node
+        if (net_.edges[edge_id].prob >= 1.0) {
+            contract_edge_in_place(state, edge_id, net_);
             return build_recursive(std::move(state), var_idx + 1);
         }
 
@@ -263,6 +273,7 @@ private:
 // ── Public build_diagram ─────────────────────────────────────────────────────────
 
 reliability_diagram build_diagram(const graph& g, teddy::int64 pool_size) {
+    detail::require_valid(g, "build_diagram");
     auto ordering = generate_variable_ordering(g);
     bool has_imperfect = has_imperfect_vertices(g);
     teddy::int32 var_count = count_bdd_variables(ordering, has_imperfect);

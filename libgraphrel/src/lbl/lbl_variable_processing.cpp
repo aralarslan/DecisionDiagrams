@@ -16,14 +16,27 @@
 
 namespace teddy::graphrel {
 
-static constexpr double PROB_EPSILON = 1e-15;
+// A branch is skipped when its probability is exactly zero (a component with
+// p = 0 or p = 1). By default nothing else is skipped, so the result is exact
+// as in Wu & Sun (2024). With a positive prune threshold, branches at or below
+// it are dropped and their probability is accumulated in dropped_probability_,
+// which bounds the error: R lies in [result, result + dropped_probability_].
+bool lbl_calculator::keep_branch(double probability) {
+    if (probability <= 0.0)
+        return false;
+    if (probability <= prune_threshold_) {
+        dropped_probability_ += probability;
+        return false;
+    }
+    return true;
+}
 
 void lbl_calculator::process_variable(const decomp_state& sg, double parent_prob,
                                       const variable& var,
                                       std::size_t var_idx) {
     if (!sg.is_valid)
         return;
-    if (parent_prob <= PROB_EPSILON)
+    if (parent_prob <= 0.0)
         return;
 
     // ── Early ghost edge check ────────────────────────────────────────────
@@ -61,7 +74,7 @@ void lbl_calculator::process_variable(const decomp_state& sg, double parent_prob
         // Coloop: bridge edge — failure disconnects terminals
         if (is_coloop(sg, edge_id, net_)) {
             double success_prob = parent_prob * component_reliability;
-            if (success_prob > PROB_EPSILON) {
+            if (keep_branch(success_prob)) {
                 decomp_state* child = state_pool_.create(sg);
                 contract_edge_in_place(*child, edge_id, net_);
                 prune_unreachable_edges(child);
@@ -72,7 +85,7 @@ void lbl_calculator::process_variable(const decomp_state& sg, double parent_prob
 
         // Standard Shannon: R = p·R(contract) + (1-p)·R(delete)
         double fail_prob = parent_prob * (1.0 - component_reliability);
-        if (fail_prob > PROB_EPSILON) {
+        if (keep_branch(fail_prob)) {
             decomp_state* child_fail = state_pool_.create(sg);
             delete_edge_in_place(*child_fail, edge_id);
             if (child_fail->is_valid && !child_fail->is_failure_terminal(net_)) {
@@ -84,7 +97,7 @@ void lbl_calculator::process_variable(const decomp_state& sg, double parent_prob
         }
 
         double success_prob = parent_prob * component_reliability;
-        if (success_prob > PROB_EPSILON) {
+        if (keep_branch(success_prob)) {
             decomp_state* child_success = state_pool_.create(sg);
             contract_edge_in_place(*child_success, edge_id, net_);
             if (child_success->is_valid &&
@@ -106,14 +119,14 @@ void lbl_calculator::process_variable(const decomp_state& sg, double parent_prob
     if (is_terminal) {
         // Terminal must succeed — failure = system failure
         double success_prob = parent_prob * component_reliability;
-        if (success_prob > PROB_EPSILON) {
+        if (keep_branch(success_prob)) {
             decomp_state* cloned = state_pool_.create(sg);
             insert_or_merge(cloned, success_prob, var_idx + 1);
         }
     } else {
         // Non-terminal: standard Shannon on vertex
         double fail_prob = parent_prob * (1.0 - component_reliability);
-        if (fail_prob > PROB_EPSILON) {
+        if (keep_branch(fail_prob)) {
             decomp_state* child_fail = state_pool_.create(sg);
             delete_vertex_in_place(*child_fail, vertex_id, net_);
             if (child_fail->is_valid &&
@@ -126,7 +139,7 @@ void lbl_calculator::process_variable(const decomp_state& sg, double parent_prob
         }
 
         double success_prob = parent_prob * component_reliability;
-        if (success_prob > PROB_EPSILON) {
+        if (keep_branch(success_prob)) {
             decomp_state* cloned = state_pool_.create(sg);
             insert_or_merge(cloned, success_prob, var_idx + 1);
         }

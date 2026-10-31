@@ -12,6 +12,7 @@ add_library(
         src/common/variable_ordering.cpp
         src/common/pruning.cpp
         src/common/boundary.cpp
+        src/common/validation.cpp
         src/lbl/lbl_calculator.cpp
         src/lbl/lbl_variable_processing.cpp
         src/diagram/diagram.cpp

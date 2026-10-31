@@ -37,6 +37,9 @@ struct edge {
  * Uses adjacency list for efficient edge operations (delete, contract).
  */
 struct graph {
+  /// Largest supported number of vertices (union-find uses 16-bit parents).
+  static constexpr std::size_t max_vertices = 65535;
+
   // Graph structure
   std::size_t num_vertices; ///< Number of vertices |V|
   std::size_t num_edges;    ///< Number of edges |E|
@@ -47,8 +50,10 @@ struct graph {
   // Edge data
   std::vector<edge> edges; ///< All edges in the graph
 
-  // Terminal vertices K ⊆ V (sorted vector)
-  std::vector<std::size_t> terminals; ///< Sorted vector of terminal vertices (0-indexed)
+  /// Terminal vertices K ⊆ V. Must be non-empty, sorted and duplicate-free;
+  /// prefer set_terminals(), which normalises the list. |K| = 1 is allowed
+  /// and gives R = reliability of that vertex.
+  std::vector<std::size_t> terminals;
 
   // Adjacency list: adj[v] = vector of edge IDs incident to vertex v
   std::vector<std::vector<std::size_t>> adj;
@@ -104,7 +109,20 @@ struct graph {
   std::size_t add_edge(std::size_t from, std::size_t to, double prob);
 
   /**
+   * @brief Set the terminal set K (sorted and de-duplicated).
+   * @throws std::out_of_range if a vertex index is out of range
+   * @throws std::invalid_argument if @p k is empty
+   */
+  void set_terminals(std::vector<std::size_t> k);
+
+  /**
    * @brief Validate graph structure
+   *
+   * Checks sizes, probabilities (in [0, 1], not NaN), edge/adjacency
+   * consistency, and that the terminal set is non-empty, in range, sorted
+   * and duplicate-free. calculate_reliability() and build_diagram() throw
+   * std::invalid_argument with the specific reason when this fails.
+   *
    * @return true if graph is valid
    */
   bool validate() const;
