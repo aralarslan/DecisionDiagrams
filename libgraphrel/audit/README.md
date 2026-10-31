@@ -3,6 +3,27 @@
 Scope: everything under `libgraphrel/` (about 4,800 lines), plus how `tests/graphrel.test.cpp`
 and CI use it. Audited at commit `39fe87d`.
 
+## Status on branch `feat/libgraphrel-optimisations`
+
+| Finding | Status |
+|---|---|
+| Existing graphrel tests did not compile (`decomp_state::union_find` → `uf_`) | Fixed (`b6551c7`) |
+| 1.1 BDD perfect edges through a failed vertex | Fixed (`5df2a69`) |
+| 1.2 \|K\| = 1 | Defined as R = p(terminal) on both paths; \|K\| = 0 rejected (`5df2a69`) |
+| 1.3 Unsorted terminals | Rejected by `validate()`; new `graph::set_terminals()` normalises (`5df2a69`) |
+| 1.4 Custom orderings | Must be a permutation that respects vertex priority (`5df2a69`) |
+| 1.5 1e-15 cutoff | LBL exact again; opt-in `calculate_reliability_bounds()` keeps the speed with a rigorous interval (`5df2a69`) |
+| 1.6 Overflow beyond F = 25 | Throws `std::length_error` instead of wrapping (`e791a17`). Hash-only identity: open |
+| 1.7 Parser / writer | Strict token parsing; exact round-trip (`5df2a69`) |
+| 1.8 Validation order, copyable `lbl_calculator` | Fixed (`5df2a69`); `state_pool` exception safety: open |
+| 1.9 Docs / attribution | Open (cleanup pass) |
+| 2.1 `bell_cache` O((V+E)²) | Fixed (`e791a17`) |
+| 2.2 Boundary precompute O(L·V) | Fixed (`e791a17`) |
+| 2.3 Redundant connectivity rebuilds | Removed (`e791a17`); frontier-local states: open (redesign) |
+| 2.4 Ordering helpers | O(V+E), identical output (`e791a17`); better ordering heuristic: open |
+| 2.5–2.7, §3 | Open |
+| §4 Tests and CI | Brute-force fuzz, precondition, I/O and paper tests; CI runs them on GCC and Clang, plus an ASan/UBSan job (`5df2a69`, `542bf11`) |
+
 ## Which reference applies to which code
 
 libgraphrel contains two different algorithms, and they must be judged against different sources:
@@ -32,7 +53,7 @@ semantics and BS definitions in Carlier & Lucet, Imai et al. and Kawahara et al.
 | Two minors are isomorphic iff their elimination partitions are equal, **given the same remaining edge set Ē_i** | Imai Theorem 1 (front V_i defined per level) | **Not checked by the code.** Pruning and vertex deletion mean states at one level can have different remaining edge sets, so Theorem 1 doesn't cover the library's key. Fuzzing found no counterexample (0 / 30,000), but none of these references proves it. Make it a documented invariant, and add a debug assertion that compares the remaining unprocessed edge sets on every key hit. |
 | Failed vertex ⇒ every incident edge is 0: R_EV = R_E \|_{e←0 ∀ e∈E_v, v down} | Kawahara §3.1 | LBL: correct. **BDD: violated for p(e) = 1** (1.1). The perfect-edge shortcut sets e to 1 even when an endpoint is down. |
 | Vertex variable placed just before the first edge in E_v | Kawahara §3.1; Wu & Sun §2.3 | The library's BFS does exactly this, e.g. v1 < v2 < e1 < v3 < e2 < e3 on the Fig. 1 bridge. |
-| Ordering quality: F_max should be as small as possible; BFS with random swaps accepted when ΔF_max < 0 | C&L §4.9; Imai §2.2 (Theorem 2: width ≤ B_l); Kawahara §4.4 | **Only plain BFS is provided, with no improvement step.** On meshes this is the cause of the gap to Wu & Sun's Table 2 (see the reproduction below). F_max alone isn't a good enough target: on 10×10, BFS and the row sweep both have F_max = 11, but G^max is 340,599 vs 58,039. |
+| Ordering quality: F_max should be as small as possible; BFS with random swaps accepted when ΔF_max < 0 | C&L §4.9; Imai §2.2 (Theorem 2: width ≤ B_l); Kawahara §4.4 | **Only plain BFS is provided, with no improvement step.** On meshes this is the cause of the gap to Wu & Sun's Table 2 (see the reproduction below). F_max alone isn't a good enough target: on 10×10, BFS and the row sweep both have F_max = 11, but G^max is 387,481 vs 65,858 (exact). |
 | Graph connected; 2 ≤ \|K\| | C&L §2; Imai §2.1; Kawahara §2.1; Wu & Sun §2.1 | Not enforced (1.2). |
 
 ### Wu & Sun (2024) preconditions and whether the code enforces them
@@ -74,7 +95,9 @@ correct-but-risky, or removed.
 
 Every reliability value I could reproduce matches Wu & Sun **exactly**. The peak layer sizes
 (G^max, Table 2 column B¹) with the library's default BFS ordering do **not**. With a row-by-row
-sweep ordering they come within 1.08–1.25× of the paper.
+sweep ordering they come within 1.22–1.25× of the paper. All counts below are exact (no probability
+cutoff); the first version of this table had N20 at 340,599 / 58,039 because the old 1e-15 cutoff
+was silently dropping states.
 
 | Network | Paper R | libgraphrel R | Paper B¹ (G^max) | G^max, library BFS | G^max, row sweep | Paper time | libgraphrel time (BFS / sweep) |
 |---|---|---|---|---|---|---|---|
@@ -83,8 +106,8 @@ sweep ordering they come within 1.08–1.25× of the paper.
 | N6 (3×10 mesh) | 0.609632 | 0.609632 | 12 | 19 | 15 | 0.0 s | 0.0 s |
 | N7 (3×12 mesh) | 0.579399 | 0.579399 | 12 | 19 | 15 | 0.0 s | 0.0 s |
 | N8 (5×5 mesh) | 0.711988 | 0.711988 | 118 | 253 | 146 | 0.0 s | 0.0 s |
-| N20 (10×10 mesh) | 0.714299 | 0.714299 | 53,924 | **340,599** | **58,039** | 42.9 s | 200.8 s / 91.0 s |
-| N27 (complete K₁₂) | 0.810000 | 0.810000 | 816,465 | 42,665 | — | 72.9 s | 2.2 s |
+| N20 (10×10 mesh) | 0.714299 | 0.714299 | 53,924 | **387,481** | **65,858** | 42.9 s | 140.2 s / 65.9 s (after `e791a17`) |
+| N27 (complete K₁₂) | 0.810000 | 0.810000 | 816,465 | 1,459,298 exact (42,665 with the old 1e-15 cutoff) | — | 72.9 s | 104 s exact (2.2 s with cutoff) |
 
 All edges and vertices are 0.9, with the two terminals at the largest distance apart (opposite mesh
 corners). I identified N6–N9 from |V| and |E| in Table 1; the exact match of R confirms the
@@ -94,12 +117,16 @@ C&L §4.9 / Fig. 3. Script: `sweep.cpp`.
 
 - On the bridge, the library is at or below the paper layer by layer. Coloop detection and
   dead-component pruning (Imai Lemma 1; not in Wu & Sun) remove one state at layer 6.
-- On K₁₂ it is 19× *below* the paper, again thanks to coloop detection and pruning.
-- On meshes the library's corner-seeded BFS is 1.25–6.3× *above* the paper. The cause is the
+- On K₁₂ it *appears* 19× below the paper, but **this was wrong in the first version of this
+  report.** The low count came from the 1e-15 probability cutoff (1.5), not from coloop
+  detection and pruning. Computed exactly, K₁₂ peaks at 1,459,298 states, 1.8× the paper's
+  816,465, and takes 104 s / 1.2 GB. The cutoff silently discarded about 97 % of the states;
+  the answer still matched to 6 digits.
+- On meshes the library's corner-seeded BFS is 1.25–7.2× *above* the paper. The cause is the
   **ordering**, not the state definition:
   - BFS from a corner sweeps diagonally, and those fronts allow many more partitions than a row
     front of the same size.
-  - With a row sweep the gap shrinks to 1.08× on N20 and 1.25× on the small meshes. N20's run
+  - With a row sweep the gap shrinks to 1.22× on N20 and 1.25× on the small meshes. N20's run
     time halves at the same time.
   - The small residual is plausibly BFS tie-breaking in the authors' code, which the paper doesn't
     specify. Every state I inspected is genuinely distinct.
@@ -459,7 +486,7 @@ as `copy + in_place` in the tests.
    - Add the fuzz test in `PAPER=1` and `KMIN2=1` modes, and turn tests on in CI.
 2. **Better ordering.** Offer a sweep/front-minimising ordering next to BFS, in the spirit of the
    C&L §4.9 improvement loop, but scoring candidates on more than F_max, e.g. a short simulated
-   layer count. This closes most of the G^max gap to Wu & Sun's Table 2 (N20: 340,599 → 58,039
+   layer count. This closes most of the G^max gap to Wu & Sun's Table 2 (N20: 387,481 → 65,858
    states). Fix `estimate_max_boundary_size` (2.4) first so the scoring is cheap.
 3. **Cheap performance wins:** size `bell_cache` by F (2.1), make `precompute` incremental (2.2),
    remove the redundant failure checks (2.3), fix the ordering helpers (2.4). Together these turn
