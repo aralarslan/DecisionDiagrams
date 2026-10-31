@@ -539,8 +539,8 @@ BOOST_AUTO_TEST_CASE(graph_ops_contract_edge) {
 
     // e0 removed; vertices 0 and 1 merged
     BOOST_TEST(sg2.remaining_edges.size() == 1u);
-    BOOST_TEST( sg2.union_find.connected_const(0, 1));
-    BOOST_TEST(!sg2.union_find.connected_const(0, 2));
+    BOOST_TEST( sg2.uf_.connected_const(0, 1));
+    BOOST_TEST(!sg2.uf_.connected_const(0, 2));
 }
 
 BOOST_AUTO_TEST_CASE(graph_ops_delete_vertex) {
