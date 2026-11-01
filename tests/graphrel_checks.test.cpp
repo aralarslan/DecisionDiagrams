@@ -28,6 +28,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -325,6 +326,35 @@ BOOST_AUTO_TEST_CASE(single_terminal_is_its_own_reliability) {
     std::vector<variable> ord{{variable_type::vertex, 1}, {variable_type::vertex, 0},
                               {variable_type::edge, 0}};
     BOOST_TEST(calculate_reliability(g, ord) == 0.3, boost::test_tools::tolerance(1e-12));
+}
+
+// lbl_calculator keeps a reference to its graph: a temporary must not bind.
+static_assert(!std::is_constructible_v<lbl_calculator, graph&&>);
+static_assert(!std::is_constructible_v<lbl_calculator, graph&&, const std::vector<variable>&>);
+static_assert(std::is_constructible_v<lbl_calculator, const graph&>);
+
+BOOST_AUTO_TEST_CASE(diagram_accessors_are_checked) {
+    graph g(2, 1);
+    g.add_edge(0, 1, 0.5);
+    g.set_terminals({0, 1});
+    const reliability_diagram d = build_diagram(g);
+    BOOST_TEST(d.edge_var(0) >= 0);
+    BOOST_TEST(d.vertex_var(0) == -1); // all vertices perfect: no vertex variables
+    BOOST_CHECK_THROW(d.edge_var(1), std::out_of_range);
+    BOOST_CHECK_THROW(d.vertex_var(2), std::out_of_range);
+    BOOST_CHECK_THROW(d.edge_change(5, 0, 1), std::out_of_range);
+}
+
+// The one-argument ordering uses the library default, cut-width.
+BOOST_AUTO_TEST_CASE(default_ordering_is_cutwidth) {
+    const graph g = mesh(4, 12, 0.9);
+    const auto by_default = generate_variable_ordering(g);
+    const auto cutwidth = generate_variable_ordering(g, ordering_strategy::cutwidth);
+    BOOST_TEST(by_default.size() == cutwidth.size());
+    bool same = true;
+    for (std::size_t i = 0; i < cutwidth.size(); ++i)
+        same = same && by_default[i].type == cutwidth[i].type && by_default[i].id == cutwidth[i].id;
+    BOOST_TEST(same);
 }
 
 BOOST_AUTO_TEST_CASE(terminals_are_normalised) {

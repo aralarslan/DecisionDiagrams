@@ -17,6 +17,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace teddy::graphrel {
@@ -36,17 +38,17 @@ reliability_diagram::reliability_diagram(teddy::bss_manager mgr,
 {}
 
 teddy::int32 reliability_diagram::edge_var(std::size_t edge_id) const {
-    return edge_to_var_[edge_id];
+    return edge_to_var_.at(edge_id);
 }
 
 teddy::int32 reliability_diagram::vertex_var(std::size_t vertex_id) const {
-    return vertex_to_var_[vertex_id];
+    return vertex_to_var_.at(vertex_id);
 }
 
 teddy::var_change reliability_diagram::edge_change(std::size_t edge_id,
                                           teddy::int32 from,
                                           teddy::int32 to) const {
-    return teddy::var_change{edge_to_var_[edge_id], from, to};
+    return teddy::var_change{edge_to_var_.at(edge_id), from, to};
 }
 
 // ── Internal BDD builder ─────────────────────────────────────────────────────
@@ -93,7 +95,7 @@ public:
     //  1. forward, layer by layer: expand every state and record where its
     //     two branches lead (a state of the next layer, or the 0/1 sink);
     //  2. backward: create the TeDDy nodes from the last layer up.
-    // Only the per-state links of all layers are kept (16 bytes per state);
+    // Only the per-state links of all layers are kept (24 bytes per state);
     // state keys are needed for two layers at a time. No recursion, so the
     // depth of the diagram is not limited by the call stack.
     bdd_t build() {
@@ -175,6 +177,8 @@ public:
 
     const std::vector<teddy::int32>& edge_to_var() const { return edge_to_var_; }
     const std::vector<teddy::int32>& vertex_to_var() const { return vertex_to_var_; }
+    std::vector<teddy::int32> take_edge_to_var() { return std::move(edge_to_var_); }
+    std::vector<teddy::int32> take_vertex_to_var() { return std::move(vertex_to_var_); }
 
 private:
     void init_variable_index_mappings() {
@@ -235,8 +239,7 @@ reliability_diagram build_diagram(const graph& g, teddy::int64 pool_size) {
     }
 
     return reliability_diagram(std::move(mgr), std::move(diagram), std::move(probs),
-                     std::vector<teddy::int32>(e2v),
-                     std::vector<teddy::int32>(v2v));
+                               builder.take_edge_to_var(), builder.take_vertex_to_var());
 }
 
 } // namespace teddy::graphrel

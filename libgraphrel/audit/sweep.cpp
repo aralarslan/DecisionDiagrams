@@ -32,7 +32,7 @@ int main(int argc, char** argv) {
     }
     for (int which = 0; which < 2; ++which) {
         if (which == 0 && argc > 3) continue;  // skip BFS when asked
-        auto ord = which == 0 ? generate_variable_ordering(g) : sweep;
+        auto ord = which == 0 ? generate_variable_ordering(g, ordering_strategy::bfs) : sweep;
         auto t0 = std::chrono::steady_clock::now();
         lbl_calculator calc(g, ord);
         double R = calc.calculate();

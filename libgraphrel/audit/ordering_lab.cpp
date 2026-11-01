@@ -157,7 +157,7 @@ int main(int argc, char** argv) {
         auto& [name, g] = cases[ci];
         if (mode == "run" && name != argv[2]) continue;
         std::vector<std::pair<std::string, std::vector<std::size_t>>> cands;
-        cands.emplace_back("bfs", vertex_seq(generate_variable_ordering(g)));
+        cands.emplace_back("bfs", vertex_seq(generate_variable_ordering(g, ordering_strategy::bfs)));
         const std::size_t seed = g.terminals().front();
         cands.emplace_back("greedy", greedy_cut(g, seed));
         for (std::size_t e : g.get_incident_edges(seed)) {

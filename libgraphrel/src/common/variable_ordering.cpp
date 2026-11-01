@@ -6,11 +6,11 @@
  * Kawahara et al. 2019, §3.1): every vertex appears before its incident
  * edges, and an edge is emitted as soon as both endpoints have been emitted.
  *
- * - BFS (default): breadth-first from the first terminal.
+ * - BFS: breadth-first from the first terminal (Wu & Sun's setup).
  * - DFS: depth-first from the first terminal. Equally correct, but it can
  *   produce far larger boundary sets (and layers) than BFS.
- * - cutwidth: greedy edge-cut minimisation with candidate selection; the
- *   default for calculate_reliability() and build_diagram().
+ * - cutwidth (default): greedy edge-cut minimisation with candidate
+ *   selection; also used by calculate_reliability() and build_diagram().
  *
  * When a vertex is emitted, the edges that become ready are exactly its
  * incident edges whose other endpoint was already emitted. BFS and DFS take
@@ -420,11 +420,6 @@ std::vector<variable> cutwidth_ordering(const graph& g) {
 }
 
 } // namespace
-
-std::vector<variable> generate_variable_ordering(const graph& g) {
-    detail::require_valid(g, "generate_variable_ordering");
-    return bfs_ordering(g);
-}
 
 std::vector<variable> generate_variable_ordering(const graph& g,
                                                  ordering_strategy strategy) {

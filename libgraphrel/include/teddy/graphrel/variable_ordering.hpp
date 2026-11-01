@@ -51,25 +51,17 @@ enum class ordering_strategy {
 };
 
 /**
- * @brief Generate a BFS variable ordering (Wu & Sun default).
- *
- * Kept as BFS for compatibility. calculate_reliability() and build_diagram()
- * use ordering_strategy::cutwidth by default.
- *
- * @param g Graph with terminals set.
- * @return Ordered list of variables (vertices before incident edges).
- */
-std::vector<variable> generate_variable_ordering(const graph& g);
-
-/**
- * @brief Generate a variable ordering using the specified strategy.
+ * @brief Generate a variable ordering (every vertex before its edges).
  *
  * @param g        Graph with terminals set.
- * @param strategy bfs or dfs.
+ * @param strategy ordering_strategy::cutwidth (the default, also used by
+ *                 calculate_reliability() and build_diagram()), bfs (Wu &
+ *                 Sun's setup) or dfs.
  * @return Ordered list of variables.
+ * @throws std::invalid_argument if @p g has no terminal set
  */
-std::vector<variable> generate_variable_ordering(const graph& g,
-                                                  ordering_strategy strategy);
+std::vector<variable> generate_variable_ordering(
+    const graph& g, ordering_strategy strategy = ordering_strategy::cutwidth);
 
 /**
  * @brief Estimate the maximum boundary set size for a given ordering.

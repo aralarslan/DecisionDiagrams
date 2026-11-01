@@ -133,7 +133,7 @@ int main(int argc, char** argv) {
         std::size_t n = argc > 2 ? std::strtoul(argv[2], nullptr, 10) : 40;
         graph g = grid(n, n, 0.9);
         auto t0 = clk::now();
-        auto ord = generate_variable_ordering(g);
+        auto ord = generate_variable_ordering(g, ordering_strategy::bfs);
         std::printf("[ordering %zux%zu] generate_variable_ordering: %.0f ms\n", n, n, ms(t0));
         t0 = clk::now();
         auto f = estimate_max_boundary_size(g, ord);

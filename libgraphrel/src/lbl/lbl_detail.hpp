@@ -32,7 +32,10 @@ public:
     explicit lbl_calculator(const graph& g);
     lbl_calculator(const graph& g, const std::vector<variable>& ordering);
 
-    // Holds a reference to the graph.
+    // Holds a reference to the graph, so a temporary graph is refused (it
+    // would dangle as soon as the constructor returns).
+    explicit lbl_calculator(graph&&) = delete;
+    lbl_calculator(graph&&, const std::vector<variable>&) = delete;
     lbl_calculator(const lbl_calculator&) = delete;
     lbl_calculator& operator=(const lbl_calculator&) = delete;
 
