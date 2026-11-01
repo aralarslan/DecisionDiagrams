@@ -2,9 +2,7 @@
  * @file pruning.cpp
  * @brief Dead component pruning (common free function)
  *
- * Extracted from ReliabilityCalculator::prune_unreachable_edges to enable
- * reuse by both LBL and BDD builders. The algorithm is identical; only
- * logging is omitted (LBL wraps this with its own log_stream_ output).
+ * Shared by the LBL calculator and the BDD builder.
  */
 
 #include "common/pruning.hpp"

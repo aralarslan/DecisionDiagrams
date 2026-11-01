@@ -109,7 +109,7 @@ double lbl_calculator::calculate() {
     stats_.num_layers       = ordering_.size();
     stats_.avg_load_factor  = ordering_.empty()
                                 ? 0.0
-                                : total_load_factor / ordering_.size();
+                                : total_load_factor / static_cast<double>(ordering_.size());
     stats_.max_probe_length = std::max(current_layer_.get_max_probe_length(),
                                        next_layer_.get_max_probe_length());
     stats_.total_map_resizes = current_layer_.get_resize_count()

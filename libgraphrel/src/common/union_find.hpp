@@ -29,8 +29,8 @@ namespace teddy::graphrel {
  */
 class union_find {
 private:
-    std::vector<uint16_t> parent_;  ///< parent[i] = parent of i (or i if root)
-    std::vector<uint8_t> rank_;     ///< rank[i] = approximate tree height
+    std::vector<std::uint16_t> parent_;  ///< parent[i] = parent of i (or i if root)
+    std::vector<std::uint8_t> rank_;     ///< rank[i] = approximate tree height
 
 public:
     /**
@@ -103,12 +103,6 @@ public:
      * @return Size of union-find structure
      */
     std::size_t size() const { return parent_.size(); }
-
-    // Copy constructor and assignment (needed for subgraph cloning)
-    union_find(const union_find& other) = default;
-    union_find& operator=(const union_find& other) = default;
-    union_find(union_find&& other) noexcept = default;
-    union_find& operator=(union_find&& other) noexcept = default;
 
     // Equality operator for tests
     bool operator==(const union_find& other) const {

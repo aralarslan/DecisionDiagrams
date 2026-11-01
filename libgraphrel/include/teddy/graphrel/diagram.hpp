@@ -10,10 +10,11 @@
 
 /**
  * @file diagram.hpp
- * @brief BDD-based network prob (Wu & Sun 2024, BS-BDD)
+ * @brief BDD of the network structure function (boundary-set BDD).
  *
- * Builds a Binary Decision Diagram representing the network structure function
- * using boundary-set partition isomorphism detection. The resulting reliability_diagram
+ * Builds a Binary Decision Diagram of the K-terminal structure function with
+ * boundary-set partition isomorphism detection (Hardy, Lucet & Limnios 2007;
+ * the baseline method of Wu & Sun 2024). The resulting reliability_diagram
  * owns a bss_manager and gives access to the full TeDDy analysis API:
  * calculate_probability, dpld, importance measures, MCVs, etc.
  */
@@ -32,13 +33,16 @@ struct reliability_diagram {
 
     /**
      * @brief Return the TeDDy variable index for a graph edge.
-     * @return -1 if the edge has no variable (perfect edge, prob=1).
+     *
+     * Every edge has a variable, including edges with p = 1 (those never
+     * appear as nodes in the diagram).
      */
     teddy::int32 edge_var(std::size_t edge_id) const;
 
     /**
      * @brief Return the TeDDy variable index for a graph vertex.
-     * @return -1 if vertex has no variable (perfect vertex, prob=1).
+     * @return -1 if no vertex has a variable, which happens when every vertex
+     *         is perfect (p = 1). Otherwise every vertex has one.
      */
     teddy::int32 vertex_var(std::size_t vertex_id) const;
 
@@ -68,10 +72,11 @@ private:
 };
 
 /**
- * @brief Build a BDD for network prob.
+ * @brief Build a BDD of the K-terminal structure function.
  *
- * Uses the BS-BDD algorithm (Wu & Sun 2024) with boundary-set partition
- * isomorphism detection. Returns a reliability_diagram owning the manager.
+ * Uses the boundary-set BDD algorithm (Hardy, Lucet & Limnios 2007) with
+ * the cut-width variable ordering (ordering_strategy::cutwidth). Returns a
+ * reliability_diagram owning the manager.
  *
  * @param g         Graph with edge/vertex reliabilities and terminal set.
  * @param pool_size Initial TeDDy node pool size (default 100 000).

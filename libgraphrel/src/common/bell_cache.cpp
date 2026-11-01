@@ -20,13 +20,9 @@
 
 namespace teddy::graphrel {
 
+// Dynamic programming over S(n,k) = k*S(n-1,k) + S(n-1,k-1), with
+// S(0,0) = 1, S(n,0) = 0, S(n,1) = S(n,n) = 1, and B(n) = sum_k S(n,k).
 bell_cache::bell_cache(std::size_t max_n) : max_n_(max_n) {
-  /**
-   * @brief Precompute all Stirling and Bell numbers up to max_n
-   *
-   * Uses dynamic programming with recurrence relations to build the tables.
-   * Typical max_n is 20, which covers boundary sets up to 20 vertices.
-   */
   if (max_n == 0) {
     throw std::invalid_argument("bell_cache: max_n must be > 0");
   }

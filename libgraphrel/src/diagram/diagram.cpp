@@ -1,13 +1,17 @@
 /**
- * @file reliability_diagram.cpp
- * @brief BS-BDD builder using composition (Wu & Sun 2024)
+ * @file diagram.cpp
+ * @brief Boundary-set BDD builder (Hardy, Lucet & Limnios 2007).
  *
- * build_diagram_impl() builds the BDD recursively, holding a bss_manager& ref
- * and calling mgr.make_ite() / mgr.constant() instead of inheriting.
+ * Builds the BDD top-down and depth-first, memoising sub-diagrams by the
+ * state's boundary partition (Carlier & Lucet 1996; Imai et al. 1999).
+ * Vertex failures follow the k-NR-IV semantics of Kawahara et al. (2019):
+ * every edge incident to a failed vertex is unusable. Wu & Sun (2024) use this
+ * method as the baseline for their layer-by-layer algorithm.
  *
- * IMPORTANT: The boundary_hash XORs var_idx * 0x9E3779B97F4A7C15ULL for
- * level pinning. This is critical for DFS+memoization (unlike LBL where level
- * is implicit in the ping-pong layer). Do not remove.
+ * IMPORTANT: make_key XORs var_idx * 0x9E3779B97F4A7C15 into boundary_hash.
+ * With depth-first memoisation, states from different levels share one cache,
+ * so the level must be part of the key (LBL gets it implicitly from its
+ * per-layer maps). Do not remove.
  */
 
 #include "teddy/graphrel/diagram.hpp"
@@ -23,7 +27,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <set>
 #include <unordered_map>
 #include <vector>
 
@@ -63,7 +66,7 @@ namespace {
 
 using bdd_t = teddy::bss_manager::diagram_t;
 
-static bool has_imperfect_vertices(const graph& g) {
+bool has_imperfect_vertices(const graph& g) {
     for (double rel : g.vertex_probs) {
         if (rel < 1.0)
             return true;
@@ -71,7 +74,7 @@ static bool has_imperfect_vertices(const graph& g) {
     return false;
 }
 
-static teddy::int32 count_bdd_variables(const std::vector<variable>& ordering,
+teddy::int32 count_bdd_variables(const std::vector<variable>& ordering,
                                         bool has_imperfect) {
     teddy::int32 count = 0;
     for (const auto& var : ordering) {
@@ -135,12 +138,7 @@ private:
         // XOR var_idx into boundary_hash for level pinning (required for DFS)
         return partition_key{
             part.canonical_number,
-            [&]() -> std::uint64_t {
-                std::uint64_t bits = 0;
-                for (std::size_t i = 0; i < part.K_membership.size() && i < 64; ++i)
-                    if (part.K_membership[i]) bits |= (1ULL << i);
-                return bits;
-            }(),
+            encode_k_bitset(part.K_membership),
             compute_boundary_hash(part.boundary_vertices)
                 ^ (var_idx * 0x9E3779B97F4A7C15ULL)
         };

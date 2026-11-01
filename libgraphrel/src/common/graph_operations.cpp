@@ -1,255 +1,126 @@
 /**
  * @file graph_operations.cpp
- * @brief Graph operations for network decomposition (Shannon decomposition)
+ * @brief Edge/vertex operations for the decomposition (Shannon expansion).
+ *
+ * The in-place operations are the implementation. The copying variants
+ * (delete_edge, contract_edge, delete_vertex) are thin wrappers kept for
+ * tests and experiments; they also flag states whose terminals can no longer
+ * be connected.
  */
 
 #include "common/graph_operations.hpp"
+
 #include <algorithm>
 
 namespace teddy::graphrel {
 
-decomp_state delete_edge(const decomp_state &sg, std::size_t edge_id,
-                     const graph &net) {
-    decomp_state result = sg.clone();
+namespace {
 
-    auto it = std::lower_bound(result.remaining_edges.begin(),
-                               result.remaining_edges.end(), edge_id);
-    if (it != result.remaining_edges.end() && *it == edge_id) {
-        result.remaining_edges.erase(it);
-    }
-
-    if (result.is_failure_terminal(net)) {
-        result.is_valid = false;
-    }
-
-    return result;
+/// Remove @p x from a sorted vector, if present.
+void erase_sorted(std::vector<std::size_t>& values, std::size_t x) {
+    auto it = std::lower_bound(values.begin(), values.end(), x);
+    if (it != values.end() && *it == x)
+        values.erase(it);
 }
 
-decomp_state contract_edge(const decomp_state &sg, std::size_t edge_id,
-                       const graph &net) {
-    decomp_state result = sg.clone();
-
-    const edge &e = net.edges[edge_id];
-    std::size_t u = e.from;
-    std::size_t v = e.to;
-
-    result.uf_.unite(u, v);
-
-    auto it = std::lower_bound(result.remaining_edges.begin(),
-                               result.remaining_edges.end(), edge_id);
-    if (it != result.remaining_edges.end() && *it == edge_id) {
-        result.remaining_edges.erase(it);
-    }
-
-    auto u_it = std::find(result.current_K.begin(), result.current_K.end(), u);
-    auto v_it = std::find(result.current_K.begin(), result.current_K.end(), v);
-    bool u_in_K = (u_it != result.current_K.end());
-    bool v_in_K = (v_it != result.current_K.end());
-
-    if (u_in_K && v_in_K) {
-        std::size_t rep = result.uf_.find(u);
-        result.current_K.erase(u_it);
-        v_it = std::find(result.current_K.begin(), result.current_K.end(), v);
-        if (v_it != result.current_K.end()) {
-            result.current_K.erase(v_it);
-        }
-        auto rep_it = std::lower_bound(result.current_K.begin(),
-                                       result.current_K.end(), rep);
-        if (rep_it == result.current_K.end() || *rep_it != rep) {
-            result.current_K.insert(rep_it, rep);
-        }
-    } else if (v_in_K) {
-        std::size_t rep = result.uf_.find(u);
-        result.current_K.erase(v_it);
-        auto rep_it = std::lower_bound(result.current_K.begin(),
-                                       result.current_K.end(), rep);
-        if (rep_it == result.current_K.end() || *rep_it != rep) {
-            result.current_K.insert(rep_it, rep);
-        }
-    } else if (u_in_K) {
-        std::size_t rep = result.uf_.find(u);
-        if (rep != u) {
-            result.current_K.erase(u_it);
-            auto rep_it = std::lower_bound(result.current_K.begin(),
-                                           result.current_K.end(), rep);
-            if (rep_it == result.current_K.end() || *rep_it != rep) {
-                result.current_K.insert(rep_it, rep);
-            }
-        }
-    }
-
-    return result;
+/// Insert @p x into a sorted vector, unless already present.
+void insert_sorted(std::vector<std::size_t>& values, std::size_t x) {
+    auto it = std::lower_bound(values.begin(), values.end(), x);
+    if (it == values.end() || *it != x)
+        values.insert(it, x);
 }
 
-decomp_state delete_vertex(const decomp_state &sg, std::size_t vertex_id,
-                       const graph &net) {
-    decomp_state result = sg.clone();
-
-    auto it = std::lower_bound(result.current_K.begin(),
-                               result.current_K.end(), vertex_id);
-    if (it != result.current_K.end() && *it == vertex_id) {
-        result.current_K.erase(it);
-    }
-
-    const auto &incident = net.adj[vertex_id];
-    for (std::size_t eid : incident) {
-        auto eit = std::lower_bound(result.remaining_edges.begin(),
-                                    result.remaining_edges.end(), eid);
-        if (eit != result.remaining_edges.end() && *eit == eid) {
-            result.remaining_edges.erase(eit);
-        }
-    }
-
-    if (result.current_K.empty() || result.is_failure_terminal(net)) {
-        result.is_valid = false;
-    }
-
-    return result;
+bool contains_sorted(const std::vector<std::size_t>& values, std::size_t x) {
+    return std::binary_search(values.begin(), values.end(), x);
 }
 
-bool is_coloop(const decomp_state &sg, std::size_t edge_id, const graph &net) {
-    const edge &e = net.edges[edge_id];
-    std::size_t u = e.from;
-    std::size_t v = e.to;
+} // namespace
 
-    if (sg.uf_.connected_const(u, v)) {
-        return false;
-    }
+// ── In-place operations (used by LBL and BDD) ───────────────────────────────
 
-    if (std::binary_search(sg.remaining_edges.begin(),
-                           sg.remaining_edges.end(), edge_id)) {
-        if (sg.is_failure_terminal(net, edge_id)) {
-            return true;
-        }
-    }
-
-    return false;
+void delete_edge_in_place(decomp_state& sg, std::size_t edge_id) {
+    erase_sorted(sg.remaining_edges, edge_id);
 }
 
-decomp_state delete_edge_no_check(const decomp_state &sg, std::size_t edge_id,
-                              const graph & /*net*/) {
-    decomp_state result = sg.clone();
-
-    auto it = std::lower_bound(result.remaining_edges.begin(),
-                               result.remaining_edges.end(), edge_id);
-    if (it != result.remaining_edges.end() && *it == edge_id) {
-        result.remaining_edges.erase(it);
-    }
-
-    return result;
-}
-
-decomp_state delete_vertex_no_check(const decomp_state &sg, std::size_t vertex_id,
-                                const graph &net) {
-    decomp_state result = sg.clone();
-
-    auto it = std::lower_bound(result.current_K.begin(),
-                               result.current_K.end(), vertex_id);
-    if (it != result.current_K.end() && *it == vertex_id) {
-        result.current_K.erase(it);
-    }
-
-    const auto &incident = net.adj[vertex_id];
-    for (std::size_t eid : incident) {
-        auto eit = std::lower_bound(result.remaining_edges.begin(),
-                                    result.remaining_edges.end(), eid);
-        if (eit != result.remaining_edges.end() && *eit == eid) {
-            result.remaining_edges.erase(eit);
-        }
-    }
-
-    if (result.current_K.empty()) {
-        result.is_valid = false;
-    }
-
-    return result;
-}
-
-void delete_edge_in_place(decomp_state &sg, std::size_t edge_id) {
-    auto it = std::lower_bound(sg.remaining_edges.begin(),
-                               sg.remaining_edges.end(), edge_id);
-    if (it != sg.remaining_edges.end() && *it == edge_id) {
-        sg.remaining_edges.erase(it);
-    }
-}
-
-void contract_edge_in_place(decomp_state &sg, std::size_t edge_id,
-                            const graph &net) {
-    const edge &e = net.edges[edge_id];
-    std::size_t u = e.from;
-    std::size_t v = e.to;
+void contract_edge_in_place(decomp_state& sg, std::size_t edge_id,
+                            const graph& net) {
+    const edge& e = net.edges[edge_id];
+    const std::size_t u = e.from;
+    const std::size_t v = e.to;
 
     sg.uf_.unite(u, v);
+    erase_sorted(sg.remaining_edges, edge_id);
 
-    auto it = std::lower_bound(sg.remaining_edges.begin(),
-                               sg.remaining_edges.end(), edge_id);
-    if (it != sg.remaining_edges.end() && *it == edge_id) {
-        sg.remaining_edges.erase(it);
-    }
+    // current_K holds one representative per terminal component (sorted).
+    // After merging u and v, replace their entries by the new root.
+    const bool u_in_K = contains_sorted(sg.current_K, u);
+    const bool v_in_K = contains_sorted(sg.current_K, v);
+    if (!u_in_K && !v_in_K)
+        return;
 
-    auto u_it = std::find(sg.current_K.begin(), sg.current_K.end(), u);
-    auto v_it = std::find(sg.current_K.begin(), sg.current_K.end(), v);
-    bool u_in_K = (u_it != sg.current_K.end());
-    bool v_in_K = (v_it != sg.current_K.end());
-
+    const std::size_t rep = sg.uf_.find(u);
     if (u_in_K && v_in_K) {
-        std::size_t rep = sg.uf_.find(u);
-        sg.current_K.erase(u_it);
-        v_it = std::find(sg.current_K.begin(), sg.current_K.end(), v);
-        if (v_it != sg.current_K.end()) {
-            sg.current_K.erase(v_it);
-        }
-        auto rep_it =
-            std::lower_bound(sg.current_K.begin(), sg.current_K.end(), rep);
-        if (rep_it == sg.current_K.end() || *rep_it != rep) {
-            sg.current_K.insert(rep_it, rep);
-        }
+        erase_sorted(sg.current_K, u);
+        erase_sorted(sg.current_K, v);
+        insert_sorted(sg.current_K, rep);
     } else if (v_in_K) {
-        std::size_t rep = sg.uf_.find(u);
-        sg.current_K.erase(v_it);
-        auto rep_it =
-            std::lower_bound(sg.current_K.begin(), sg.current_K.end(), rep);
-        if (rep_it == sg.current_K.end() || *rep_it != rep) {
-            sg.current_K.insert(rep_it, rep);
-        }
-    } else if (u_in_K) {
-        std::size_t rep = sg.uf_.find(u);
-        if (rep != u) {
-            sg.current_K.erase(u_it);
-            auto rep_it = std::lower_bound(sg.current_K.begin(),
-                                           sg.current_K.end(), rep);
-            if (rep_it == sg.current_K.end() || *rep_it != rep) {
-                sg.current_K.insert(rep_it, rep);
-            }
-        }
+        erase_sorted(sg.current_K, v);
+        insert_sorted(sg.current_K, rep);
+    } else if (rep != u) {
+        erase_sorted(sg.current_K, u);
+        insert_sorted(sg.current_K, rep);
     }
 }
 
-void delete_vertex_in_place(decomp_state &sg, std::size_t vertex_id,
-                            const graph &net) {
-    auto it = std::lower_bound(sg.current_K.begin(), sg.current_K.end(),
-                               vertex_id);
-    if (it != sg.current_K.end() && *it == vertex_id) {
-        sg.current_K.erase(it);
-    }
-
-    const auto &incident = net.adj[vertex_id];
-    for (std::size_t eid : incident) {
-        auto eit = std::lower_bound(sg.remaining_edges.begin(),
-                                    sg.remaining_edges.end(), eid);
-        if (eit != sg.remaining_edges.end() && *eit == eid) {
-            sg.remaining_edges.erase(eit);
-        }
-    }
-
-    if (sg.current_K.empty()) {
+void delete_vertex_in_place(decomp_state& sg, std::size_t vertex_id,
+                            const graph& net) {
+    erase_sorted(sg.current_K, vertex_id);
+    for (std::size_t eid : net.adj[vertex_id])
+        erase_sorted(sg.remaining_edges, eid);
+    if (sg.current_K.empty())
         sg.is_valid = false;
-    }
 }
 
-bool is_loop(const decomp_state &sg, std::size_t edge_id, const graph &net) {
-    const edge &e = net.edges[edge_id];
+// ── Queries ─────────────────────────────────────────────────────────────────
+
+bool is_coloop(const decomp_state& sg, std::size_t edge_id, const graph& net) {
+    const edge& e = net.edges[edge_id];
+    if (sg.uf_.connected_const(e.from, e.to))
+        return false; // a loop, not a coloop
+    return contains_sorted(sg.remaining_edges, edge_id) &&
+           sg.is_failure_terminal(net, edge_id);
+}
+
+bool is_loop(const decomp_state& sg, std::size_t edge_id, const graph& net) {
+    const edge& e = net.edges[edge_id];
     return sg.uf_.connected_const(e.from, e.to);
+}
+
+// ── Copying wrappers ────────────────────────────────────────────────────────
+
+decomp_state delete_edge(const decomp_state& sg, std::size_t edge_id,
+                         const graph& net) {
+    decomp_state result = sg.clone();
+    delete_edge_in_place(result, edge_id);
+    if (result.is_failure_terminal(net))
+        result.is_valid = false;
+    return result;
+}
+
+decomp_state contract_edge(const decomp_state& sg, std::size_t edge_id,
+                           const graph& net) {
+    decomp_state result = sg.clone();
+    contract_edge_in_place(result, edge_id, net);
+    return result;
+}
+
+decomp_state delete_vertex(const decomp_state& sg, std::size_t vertex_id,
+                           const graph& net) {
+    decomp_state result = sg.clone();
+    delete_vertex_in_place(result, vertex_id, net);
+    if (result.is_valid && result.is_failure_terminal(net))
+        result.is_valid = false;
+    return result;
 }
 
 } // namespace teddy::graphrel

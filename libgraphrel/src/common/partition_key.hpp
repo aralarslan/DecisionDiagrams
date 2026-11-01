@@ -8,6 +8,7 @@
 #include <functional>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace teddy::graphrel {
 
@@ -15,16 +16,16 @@ namespace teddy::graphrel {
  * @struct partition_key
  * @brief Optimized key for hash map lookup (192-bit, cache-friendly)
  *
- * Replaces vector-based PartitionKey with fixed-size struct for LBL algorithm:
+ * Fixed-size key identifying a decomposition state within a layer:
  * - partition_number: Stirling encoding of partition structure
  * - k_bitset: Bitmask of which blocks contain K-vertices
- * - boundary_hash: XXH3-style hash of absolute boundary vertex IDs
+ * - boundary_hash: 64-bit hash of the sorted boundary vertex ids
  *
  * Design rationale:
  * - 24 bytes (3x uint64_t) fits in 1.5 cache lines
- * - No dynamic allocations (vs. std::vector in PartitionKey)
- * - boundary_hash provides absolute vertex identity (solves N > 64 limitation)
- * - Supports unlimited network size via hashing
+ * - No dynamic allocations
+ * - boundary_hash stands in for the boundary vertex set; a collision would
+ *   merge two different states (audit finding 1.6, open)
  */
 struct alignas(16) partition_key {
   /// Boundary sets are limited by 64-bit partition numbers (see
@@ -54,9 +55,19 @@ struct alignas(16) partition_key {
 /**
  * @brief Convert partition_key to human-readable string for debugging
  *
- * Note: partition_number and boundary_hash are opaque. Use StirlingBellCache
- * to decode partition_number if needed.
+ * Note: partition_number and boundary_hash are opaque. number_to_partition()
+ * decodes partition_number.
  */
+/// K-membership of the blocks as a bitmask (blocks <= bell_cache::max_supported_n).
+inline std::uint64_t encode_k_bitset(const std::vector<bool>& K_membership) {
+    std::uint64_t bits = 0;
+    for (std::size_t i = 0; i < K_membership.size() && i < 64; ++i) {
+        if (K_membership[i])
+            bits |= (1ULL << i);
+    }
+    return bits;
+}
+
 inline std::string to_string(const partition_key &key) {
   std::ostringstream oss;
   oss << "partition_key{";

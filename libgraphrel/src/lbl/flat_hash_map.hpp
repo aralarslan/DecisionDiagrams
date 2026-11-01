@@ -1,10 +1,11 @@
 #ifndef GRAPHREL_SRC_LBL_FLAT_HASH_MAP_HPP
 #define GRAPHREL_SRC_LBL_FLAT_HASH_MAP_HPP
 
-#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <utility>
 #include <vector>
 
 /**
@@ -55,10 +56,9 @@ public:
   /**
    * @brief Metadata for each slot
    */
-  enum class SlotState : uint8_t {
-    EMPTY = 0,    // Slot never used
-    OCCUPIED = 1, // Slot contains valid entry
-    DELETED = 2   // Slot was occupied but entry was removed (for tombstones)
+  enum class SlotState : std::uint8_t {
+    EMPTY = 0,   // Slot never used
+    OCCUPIED = 1 // Slot contains valid entry (no erase, so no tombstones)
   };
 
 private:
@@ -70,8 +70,6 @@ private:
   Hash hasher_;                     // Hash function
   mutable std::size_t max_probe_length_ = 0; // Max probe sequence length
   std::size_t resize_count_ = 0;             // Number of resizes performed
-  mutable std::size_t collision_count_ =
-      0; // Number of collisions during probes
 
   /**
    * @brief Compute index from hash (uses bitmask for power-of-2 capacity)
@@ -112,9 +110,6 @@ private:
             max_probe_length_ = probes;
           }
           return {idx, true};
-        } else {
-          // Collision: Occupied by different key
-          ++collision_count_;
         }
       }
       // Continue probing (wrap around using mask)
@@ -179,8 +174,9 @@ private:
    * @brief Check if resize is needed and perform it
    */
   void maybe_resize() {
-    if (capacity_ == 0 ||
-        static_cast<float>(size_ + 1) / capacity_ > max_load_factor_) {
+    if (capacity_ == 0 || static_cast<double>(size_ + 1) >
+                              static_cast<double>(max_load_factor_) *
+                                  static_cast<double>(capacity_)) {
       std::size_t new_capacity = (capacity_ == 0) ? 16 : capacity_ * 2;
       resize(new_capacity);
     }
@@ -226,7 +222,9 @@ public:
    * @brief Get current load factor
    */
   float load_factor() const {
-    return capacity_ > 0 ? static_cast<float>(size_) / capacity_ : 0.0f;
+    return capacity_ > 0 ? static_cast<float>(static_cast<double>(size_) /
+                                              static_cast<double>(capacity_))
+                         : 0.0f;
   }
 
   /**
@@ -239,63 +237,10 @@ public:
    */
   std::size_t get_resize_count() const { return resize_count_; }
 
-  /**
-   * @brief Get total number of hash collisions detected
-   */
-  std::size_t get_collision_count() const { return collision_count_; }
-
-  /**
-   * @brief Find or insert key-value pair
-   *
-   * If key exists, returns reference to existing value.
-   * If key doesn't exist, inserts with default value and returns reference.
-   *
-   * @param key Key to find or insert
-   * @return Reference to value (existing or newly inserted)
-   */
-  Value &find_or_insert(const Key &key) {
-    maybe_resize();
-
-    auto [idx, found] = find_slot(key);
-
-    if (found) {
-      return entries_[idx].value;
-    }
-
-    // Insert new entry
-    entries_[idx].key = key;
-    entries_[idx].value = Value{}; // Default-construct value
-    metadata_[idx] = SlotState::OCCUPIED;
-    ++size_;
-
-    return entries_[idx].value;
-  }
-
-  /**
-   * @brief Find or insert with specified value
-   */
-  Value &find_or_insert(const Key &key, const Value &default_value) {
-    maybe_resize();
-
-    auto [idx, found] = find_slot(key);
-
-    if (found) {
-      return entries_[idx].value;
-    }
-
-    // Insert new entry
-    entries_[idx].key = key;
-    entries_[idx].value = default_value;
-    metadata_[idx] = SlotState::OCCUPIED;
-    ++size_;
-
-    return entries_[idx].value;
-  }
 
   /**
    * @brief Emplace (insert) key-value pair
    *
-   * For compatibility with PartitionHashTable API.
    * If key exists, does NOT replace value. Otherwise inserts new entry.
    *
    * @param key Key to insert
@@ -333,7 +278,6 @@ public:
     std::swap(max_load_factor_, other.max_load_factor_);
     std::swap(max_probe_length_, other.max_probe_length_);
     std::swap(resize_count_, other.resize_count_);
-    std::swap(collision_count_, other.collision_count_);
   }
 
   /**
@@ -350,9 +294,6 @@ public:
     // Reset metadata (mark all slots as empty)
     // This is the ONLY operation needed for correctness
     std::fill(metadata_.begin(), metadata_.end(), SlotState::EMPTY);
-
-    // Reset collision count
-    collision_count_ = 0;
 
     // NOTE: We do NOT clear entries_ vector or deallocate memory
     // This preserves capacity for reuse (critical for ping-pong buffering)

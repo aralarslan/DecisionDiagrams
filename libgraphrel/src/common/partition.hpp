@@ -2,14 +2,8 @@
 #define GRAPHREL_SRC_PARTITION_HPP
 
 #include "common/bell_cache.hpp"
-#include <algorithm>
-#include <bitset>
 #include <cstddef>
 #include <cstdint>
-#include <ostream>
-#include <set>
-#include <sstream>
-#include <string>
 #include <vector>
 
 /**
@@ -54,27 +48,14 @@ struct boundary_partition {
    * @param cache Stirling-Bell cache for computation
    */
   void compute_canonical_number(const bell_cache &cache);
-
-  /**
-   * @brief Check if all terminals in same block (success terminal)
-   * @param K Terminal set
-   * @return true if all terminals are connected
-   */
-  bool is_success_terminal(const std::vector<std::size_t> &K) const;
-
-  /**
-   * @brief Check if terminals disconnected (failure terminal)
-   * @param K Terminal set (sorted vector)
-   * @return true if terminals are in different blocks
-   */
-  bool is_failure_terminal(const std::vector<std::size_t> &K) const;
 };
 
 /**
  * @brief Compute boundary hash from sorted vertex IDs
  *
- * CRITICAL: This hash is used for IDENTITY in CompactPartitionKey.
- * Hash collision = Identity collision = Data loss.
+ * This hash is the only record of a state's boundary vertex set in
+ * partition_key, so a 64-bit collision would merge two different states
+ * (audit finding 1.6; removed only by the frontier-local redesign).
  *
  * Uses robust WyHash-style mixing to achieve near-zero collision rate.
  *

@@ -60,12 +60,10 @@ public:
    */
   void destroy(state_t *state);
 
-  /**
-   * @brief Allocate a new pool when current pool is exhausted
-   */
+private:
+  /// Allocate a new pool when the current one is exhausted.
   void grow();
 
-private:
   struct pool_item {
     state_t *pool_;
     pool_item *next_;
@@ -102,35 +100,6 @@ private:
   std::size_t mainPoolSize_;
   std::size_t extraPoolSize_;
   std::size_t availableNodeCount_;
-};
-
-/**
- * @brief RAII guard for pool-allocated subgraph pointers
- *
- * Ensures pool-allocated states are destroyed if an exception occurs
- * before ownership is transferred. Call release() to transfer ownership.
- */
-class pool_guard {
-public:
-  pool_guard(state_pool &pool, decomp_state *ptr)
-      : pool_(pool), ptr_(ptr) {}
-
-  ~pool_guard() {
-    if (!released_ && ptr_) {
-      pool_.destroy(ptr_);
-    }
-  }
-
-  pool_guard(const pool_guard &) = delete;
-  pool_guard &operator=(const pool_guard &) = delete;
-
-  void release() { released_ = true; }
-  decomp_state *get() { return ptr_; }
-
-private:
-  state_pool &pool_;
-  decomp_state *ptr_;
-  bool released_ = false;
 };
 
 // Implementation
@@ -177,7 +146,7 @@ inline std::size_t state_pool::get_main_pool_size() const {
 
 template <class... Args>
 inline state_pool::state_t *state_pool::create(Args &&...args) {
-  // Auto-grow if pool is exhausted (fixes pain point #1)
+  // Grow when both the free list and the current block are exhausted
   if (availableNodeCount_ == 0) {
     grow();
   }
@@ -191,7 +160,7 @@ inline state_pool::state_t *state_pool::create(Args &&...args) {
     freeNodes_ = state->next_; // Move to next free node
     state->~state_t();
   } else {
-    // Allocate from current pool (with bounds checking - fixes pain point #2)
+    // Allocate from the current block
     state_t *poolEnd = get_current_pool_end();
     if (nextPoolNode_ >= poolEnd) {
       // Current pool exhausted, grow before allocating
@@ -222,7 +191,6 @@ inline void state_pool::grow() {
 
 inline state_pool::pool_item *
 state_pool::allocate_pool(std::size_t size, pool_item *next) {
-  // Check for malloc failure (fixes pain point #3)
   state_t *pool = static_cast<state_t *>(std::malloc(size * sizeof(state_t)));
   if (!pool) {
     throw std::bad_alloc();

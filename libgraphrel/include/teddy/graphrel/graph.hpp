@@ -7,7 +7,7 @@
 
 /**
  * @file graph.hpp
- * @brief Graph representation for prob analysis
+ * @brief Graph representation for reliability analysis
  *
  * Represents a graph with vertices, edges, reliabilities, and terminal
  * set. Uses adjacency list representation for efficient graph operations.
@@ -23,7 +23,7 @@ struct edge {
   std::size_t id;     ///< Unique edge identifier (0-indexed)
   std::size_t from;   ///< Source vertex (0-indexed)
   std::size_t to;     ///< Target vertex (0-indexed)
-  double prob; ///< Edge prob probability p_e[id]
+  double prob;        ///< Probability that the edge works
 
   edge(std::size_t id_, std::size_t from_, std::size_t to_, double prob_)
       : id(id_), from(from_), to(to_), prob(prob_) {}
@@ -31,7 +31,7 @@ struct edge {
 
 /**
  * @struct graph
- * @brief Complete graph representation for prob analysis
+ * @brief Complete graph representation for reliability analysis
  *
  * Stores graph structure, component reliabilities, and terminal set K.
  * Uses adjacency list for efficient edge operations (delete, contract).
@@ -103,7 +103,7 @@ struct graph {
    * @brief Add edge to graph
    * @param from Source vertex (0-indexed)
    * @param to Target vertex (0-indexed)
-   * @param prob Edge prob probability
+   * @param prob Probability that the edge works, in [0, 1]
    * @return Edge ID of newly added edge
    */
   std::size_t add_edge(std::size_t from, std::size_t to, double prob);
