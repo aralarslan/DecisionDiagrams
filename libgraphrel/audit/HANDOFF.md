@@ -736,7 +736,8 @@ and parallel expansion.
   not measured separately.
 - Timing comparisons with the paper cross hardware generations. Parallel timings come from a
   4-core VM and vary by about ±10 % between runs.
-- The CI workflow has been dry-run locally but not yet executed on GitHub.
+- The CI workflow passes on GitHub (run 5, `c5a049b`): Linux GCC and Clang with the graphrel tests,
+  GCC with ASan/UBSan, and the Windows MSVC build (tests are not run on Windows).
 - Hardy, Lucet & Limnios (2007) was not available: its open-access copy (HAL, hal-00019249) is
   blocked by the network policy of the environment used for this work. The BDD builder was
   checked against Carlier & Lucet, Imai et al. and Kawahara et al., and against itself through
@@ -788,7 +789,7 @@ The engine reproduces every reliability and every layer size published by Wu & S
 Future work:
 - review the BDD builder against Hardy et al. (2007), once the paper is available (HAL
   hal-00019249);
-- run the CI workflow on GitHub, which also covers the Windows/MSVC build;
+- run the graphrel tests on Windows as well (CI only builds there);
 - parallelise the BDD builder's forward pass (the backward pass calls TeDDy, which is
   single-threaded);
 - measure the ordering rules on graphs that mix perfect and imperfect vertices, and on other
@@ -844,6 +845,7 @@ Future work:
 | `0d0f22e` | `graph` as a class (A17); harnesses repaired (A18) |
 | `5ba247b`, `eaa262c`, `979199e` | This report: second phase, B¹ convention, final Table 2 |
 | `e71d745` | LBL: no per-level shard overhead on serial layers |
+| `6406143`, `c5a049b` | CI runs on `feat/**` pushes; Windows job pinned to `windows-2022` (`windows-latest` dropped VS 2022) |
 
 ## Appendix B. Reproducing the evidence
 

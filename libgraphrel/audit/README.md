@@ -29,7 +29,7 @@ technical report on the work (method, decisions, results, lessons, commit map) i
 | 2.5 `state_pool` | Fixed: recycled states reuse their allocations (`63bf4fb`) |
 | 2.6 Allocation churn, 2.7 BDD recursion depth | Fixed: frontier engine with flat state tables; BDD built layer by layer without recursion (`6c37164`, `7916203`) |
 | §3 Dead code, duplication, docs, warnings | Fixed (`195280d`); `graph` encapsulation (3.1): done, an API change (`0d0f22e`, HANDOFF §5.10) |
-| §4 Tests and CI | Brute-force fuzz, precondition, I/O and paper tests; CI runs them on GCC and Clang, plus an ASan/UBSan job (`a29ca5e`, `9771441`); parallel determinism tests, checked under ThreadSanitizer (`42c0e7d`). The workflow has not yet run on GitHub |
+| §4 Tests and CI | Brute-force fuzz, precondition, I/O and paper tests; CI runs them on GCC and Clang, plus an ASan/UBSan job (`a29ca5e`, `9771441`); parallel determinism tests, checked under ThreadSanitizer (`42c0e7d`). Green on GitHub for this branch, Windows MSVC included (`c5a049b`) |
 | Beyond the audit | Parallel layer expansion with bit-identical results (`42c0e7d`, HANDOFF §5.8) |
 
 ## Which reference applies to which code
