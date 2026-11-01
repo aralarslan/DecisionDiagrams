@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <new>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 namespace teddy::graphrel {
@@ -64,6 +65,8 @@ private:
   /// Allocate a new pool when the current one is exhausted.
   void grow();
 
+  static void assign_from(state_t &dst, const state_t &src) { dst = src; }
+
   struct pool_item {
     state_t *pool_;
     pool_item *next_;
@@ -104,12 +107,15 @@ private:
 
 // Implementation
 
+// Block sizes are clamped to >= 1: an empty block would make create() write
+// past its end.
 inline state_pool::state_pool(std::size_t mainPoolSize,
-                                            std::size_t extraPoolSize)
-    : pools_(allocate_pool(mainPoolSize, nullptr)),
+                              std::size_t extraPoolSize)
+    : pools_(allocate_pool(mainPoolSize > 0 ? mainPoolSize : 1, nullptr)),
       nextPoolNode_(pools_->pool_), freeNodes_(nullptr),
-      mainPoolSize_(mainPoolSize), extraPoolSize_(extraPoolSize),
-      availableNodeCount_(mainPoolSize) {}
+      mainPoolSize_(mainPoolSize > 0 ? mainPoolSize : 1),
+      extraPoolSize_(extraPoolSize > 0 ? extraPoolSize : 1),
+      availableNodeCount_(mainPoolSize_) {}
 
 inline state_pool::state_pool(state_pool &&other) noexcept
     : pools_(std::exchange(other.pools_, nullptr)),
@@ -144,36 +150,39 @@ inline std::size_t state_pool::get_main_pool_size() const {
   return mainPoolSize_;
 }
 
+// Exception safety and allocation reuse:
+// - A recycled state is overwritten by assignment, so its vectors keep their
+//   capacity (no free + malloc per state). If the assignment or the
+//   construction of the source throws, the node is still a valid object on
+//   the free list and nothing leaks or is destroyed twice.
+// - A fresh slot only counts as constructed (nextPoolNode_ advances) after
+//   its constructor returns, so the destructor never destroys a slot that
+//   was not constructed.
 template <class... Args>
 inline state_pool::state_t *state_pool::create(Args &&...args) {
-  // Grow when both the free list and the current block are exhausted
-  if (availableNodeCount_ == 0) {
+  if (freeNodes_) {
+    state_t *const state = freeNodes_;
+    state_t *const next_free = state->next_;
+    if constexpr (sizeof...(Args) == 1 &&
+                  (std::is_same_v<std::remove_cvref_t<Args>, state_t> && ...)) {
+      assign_from(*state, std::forward<Args>(args)...); // reuses capacity
+    } else {
+      *state = state_t(std::forward<Args>(args)...);
+    }
+    state->next_ = nullptr;
+    freeNodes_ = next_free;
+    --availableNodeCount_;
+    return state;
+  }
+
+  if (nextPoolNode_ >= get_current_pool_end()) {
     grow();
   }
-  assert(availableNodeCount_ > 0);
+  state_t *const state = nextPoolNode_;
+  ::new (state) state_t(std::forward<Args>(args)...);
+  ++nextPoolNode_;
   --availableNodeCount_;
-
-  state_t *state = nullptr;
-  if (freeNodes_) {
-    // Reuse from free list
-    state = freeNodes_;
-    freeNodes_ = state->next_; // Move to next free node
-    state->~state_t();
-  } else {
-    // Allocate from the current block
-    state_t *poolEnd = get_current_pool_end();
-    if (nextPoolNode_ >= poolEnd) {
-      // Current pool exhausted, grow before allocating
-      grow();
-      state = nextPoolNode_;
-      ++nextPoolNode_;
-    } else {
-      state = nextPoolNode_;
-      ++nextPoolNode_;
-    }
-  }
-
-  return ::new (state) state_t(std::forward<Args>(args)...);
+  return state;
 }
 
 inline void state_pool::destroy(state_pool::state_t *state) {
@@ -191,11 +200,16 @@ inline void state_pool::grow() {
 
 inline state_pool::pool_item *
 state_pool::allocate_pool(std::size_t size, pool_item *next) {
-  state_t *pool = static_cast<state_t *>(std::malloc(size * sizeof(state_t)));
+  auto *pool = static_cast<state_t *>(std::malloc(size * sizeof(state_t)));
   if (!pool) {
     throw std::bad_alloc();
   }
-  return new pool_item{pool, next};
+  try {
+    return new pool_item{pool, next};
+  } catch (...) {
+    std::free(pool);
+    throw;
+  }
 }
 
 inline state_pool::pool_item *
