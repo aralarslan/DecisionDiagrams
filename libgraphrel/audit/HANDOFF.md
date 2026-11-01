@@ -846,6 +846,9 @@ Future work:
 | `5ba247b`, `eaa262c`, `979199e` | This report: second phase, B¹ convention, final Table 2 |
 | `e71d745` | LBL: no per-level shard overhead on serial layers |
 | `6406143`, `c5a049b` | CI runs on `feat/**` pushes; Windows job pinned to `windows-2022` (`windows-latest` dropped VS 2022) |
+| `139dd44` | Code review fixes: `lbl_calculator` refuses temporaries (dangling reference), checked `reliability_diagram` accessors, cut-width as the ordering default |
+| `075f4ff` | Repository `.clang-format` applied to the library (formatting only) |
+| `6660341` | Helpers extracted: `edge::other`, `graph::loop_free_degrees`, `graph::all_vertices_perfect`, named key layout |
 
 ## Appendix B. Reproducing the evidence
 
