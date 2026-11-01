@@ -16,7 +16,7 @@ technical report on the work (method, decisions, results, lessons, commit map) i
 | 1.2 \|K\| = 1 | Defined as R = p(terminal) on both paths; \|K\| = 0 rejected (`a29ca5e`) |
 | 1.3 Unsorted terminals | Impossible by construction: `graph` is a class and `set_terminals()` sorts and de-duplicates (`a29ca5e`, `0d0f22e`) |
 | 1.4 Custom orderings | Must be a permutation that respects vertex priority (`a29ca5e`) |
-| 1.5 1e-15 cutoff | LBL exact again; opt-in `calculate_reliability_bounds()` keeps the speed with a rigorous interval (`a29ca5e`) |
+| 1.5 1e-15 cutoff | LBL exact again; opt-in pruning keeps the speed with a rigorous interval (`a29ca5e`; since `1ef50e7`: `analyze_reliability` with `prune_threshold`) |
 | 1.6 Overflow beyond F = 25, hash-only identity | Fixed by the frontier engine: exact byte-compared keys, no Bell-number limit, fronts up to 64 (`6c37164`) |
 | 1.7 Parser / writer | Strict token parsing; exact round-trip (`a29ca5e`) |
 | 1.8 Validation order, `lbl_calculator` lifetime, `state_pool` exception safety | Fixed (`a29ca5e`, `63bf4fb`). Note: `lbl_calculator` was movable, not copyable; see HANDOFF Appendix D |
@@ -31,6 +31,7 @@ technical report on the work (method, decisions, results, lessons, commit map) i
 | §3 Dead code, duplication, docs, warnings | Fixed (`195280d`); `graph` encapsulation (3.1): done, an API change (`0d0f22e`, HANDOFF §5.10) |
 | §4 Tests and CI | Brute-force fuzz, precondition, I/O and paper tests; CI runs them on GCC and Clang, plus an ASan/UBSan job (`a29ca5e`, `9771441`); parallel determinism tests, checked under ThreadSanitizer (`42c0e7d`). Green on GitHub for this branch, Windows MSVC included (`c5a049b`) |
 | Beyond the audit | Parallel layer expansion with bit-identical results (`42c0e7d`, HANDOFF §5.8) |
+| §3.4 Statistics only through the private `lbl_calculator` | Public: `analyze_reliability(...).statistics`; `lbl_calculator` removed (`1ef50e7`, HANDOFF §5.12) |
 
 ## Which reference applies to which code
 

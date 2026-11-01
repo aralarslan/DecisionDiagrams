@@ -519,7 +519,8 @@ machine and on scheduling.
 - *Sums of resolved branches* (success, pruned probability) are accumulated in fixed blocks of
   4,096 parents and then added in block order.
 - *Threads* are created on the first large layer, so small inputs never start one. The API takes
-  a `threads` argument: 1 by default, 0 for all hardware threads.
+  a `threads` setting: 1 by default, 0 for all hardware threads (since `1ef50e7`, a field of
+  `reliability_options`, §5.12).
 
 **Alternatives rejected.**
 - A concurrent table with locks: the summation order would vary.
@@ -617,6 +618,65 @@ The library, tests, audit harnesses, the example and the scaling experiment were
 Tests that built invalid graphs on purpose now check that the API refuses them. Two harnesses
 had rotted (A18). `sweep.cpp` loses its partition-numbering mode, which checked the removed
 engine. `probe.cpp` now reports the audit-time defects as rejected instead of aborting.
+
+### 5.11 One layer engine for both methods (`e3fa84f`)
+
+**Problem.** The level-by-level expansion existed twice. `lbl_calculator.cpp` had the sharded
+layers, parallel merge and order rebuild; `diagram.cpp` had a serial loop of its own, with a
+24-byte link record per state. Every improvement to one had to be made again in the other, and the
+BDD could not use threads.
+
+**Design.** `src/frontier/layer_engine.{hpp,cpp}` expands every level of a `frontier_plan`:
+- It returns the success and pruned probability and the statistics.
+- On request, it also records for every state where its two branches lead: a position in the next
+  layer, or a sink. That is 8 bytes per state (two 32-bit indices); "the variable does not
+  matter" is encoded as low = high.
+- In a parallel layer, a child's position is known only after the order rebuild. The merge
+  therefore records where each child landed, and a fourth phase resolves the links.
+- `keep_all_branches` keeps branches whatever their probability. The diagram needs this,
+  because its structure must not depend on the probabilities.
+
+**Verification.**
+- LBL results are bit-identical, as are its statistics and timings (`lbl_calculator.cpp` went
+  from 480 to 150 lines).
+- BDD node counts and R are identical to the previous builder on 7 meshes and 300 random graphs.
+  A reduced BDD is canonical, so any difference would be a bug.
+- New test: links are identical for 1–4 threads with a one-state grain.
+- Memory: the links are 3× smaller. Peak RSS on the 9×9 mesh BDD (vertices 0.9) only falls from
+  123 MB to 114 MB, because TeDDy's own nodes dominate the peak.
+
+### 5.12 Options and results in the public API (`1ef50e7`)
+
+**Problem.**
+- Every option had added overloads: `calculate_reliability` with an ordering and/or threads,
+  and `calculate_reliability_bounds` twice.
+- The statistics were reachable only through the private `lbl_calculator`. Tests, harnesses and
+  the scaling experiment included `src/lbl/lbl_detail.hpp` to get them.
+- `build_diagram` accepted neither an ordering nor threads.
+
+**Design.**
+
+| Function | Takes | Returns |
+|---|---|---|
+| `calculate_reliability(g)` | — | `double`, exact (unchanged) |
+| `analyze_reliability(g, reliability_options)` | `ordering` (empty = cut-width), `threads`, `prune_threshold` | `reliability_result`: `reliability`, `upper_bound`, `exact()`, `statistics` |
+| `build_diagram(g, diagram_options)` | `ordering`, `threads`, `pool_size` | `reliability_diagram` |
+
+The parallel-grain testing hook is `detail::analyze_reliability(g, options, grain)`, and
+`lbl_calculator` is gone. A separate name, rather than a `calculate_reliability` overload, keeps
+the simple call's return type unambiguous.
+
+**Migration.**
+
+| Before | After |
+|---|---|
+| `calculate_reliability(g, ord)` | `analyze_reliability(g, {.ordering = ord}).reliability` |
+| `calculate_reliability_bounds(g, t)`: `.lower`, `.upper` | `analyze_reliability(g, options)` with `prune_threshold = t`: `.reliability`, `.upper_bound` |
+| `lbl_calculator` + `get_statistics()` | `analyze_reliability(...).statistics` (`total_decompositions` → `total_states`, `max_boundary_size` → `max_front_size`, `peak_table_bytes` → `peak_memory_bytes`) |
+| `build_diagram(g, pool)` | `build_diagram(g, options)` with `pool_size = pool` |
+
+Designated initializers (`{.ordering = ord}`) are convenient. GCC's `-Wextra` warns when they
+leave fields out, so the README sets fields by name instead.
 
 ---
 
@@ -790,8 +850,6 @@ Future work:
 - review the BDD builder against Hardy et al. (2007), once the paper is available (HAL
   hal-00019249);
 - run the graphrel tests on Windows as well (CI only builds there);
-- parallelise the BDD builder's forward pass (the backward pass calls TeDDy, which is
-  single-threaded);
 - measure the ordering rules on graphs that mix perfect and imperfect vertices, and on other
   topologies;
 - extend the parallel speed-up beyond the merge phase, for example by partitioning the parents
@@ -849,6 +907,8 @@ Future work:
 | `139dd44` | Code review fixes: `lbl_calculator` refuses temporaries (dangling reference), checked `reliability_diagram` accessors, cut-width as the ordering default |
 | `075f4ff` | Repository `.clang-format` applied to the library (formatting only) |
 | `6660341` | Helpers extracted: `edge::other`, `graph::loop_free_degrees`, `graph::all_vertices_perfect`, named key layout |
+| `e3fa84f` | One layer engine for LBL and the BDD builder; 8-byte links; parallel BDD forward pass |
+| `1ef50e7` | Options/result API: `analyze_reliability`, `reliability_options`/`reliability_result`, `diagram_options` (API change) |
 
 ## Appendix B. Reproducing the evidence
 
