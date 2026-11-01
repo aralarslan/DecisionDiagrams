@@ -174,6 +174,16 @@ graph mesh(std::size_t rows, std::size_t cols, double p) {
     return g;
 }
 
+graph complete(std::size_t n, double p) {
+    graph g(n, n * (n - 1) / 2);
+    for (std::size_t a = 0; a < n; ++a)
+        for (std::size_t b = a + 1; b < n; ++b)
+            g.add_edge(a, b, p);
+    for (double& v : g.vertex_probs) v = p;
+    g.set_terminals({0, n - 1});
+    return g;
+}
+
 constexpr double exact_tol = 1e-9;
 
 } // namespace
@@ -423,13 +433,7 @@ BOOST_AUTO_TEST_CASE(wu_sun_table2_complete_graph_k12) {
     // ~100 s and 1.2 GB (1.46 M states per layer), so this uses the pruned
     // variant and checks that its rigorous interval is tight and contains the
     // published value.
-    const std::size_t n = 12;
-    graph g(n, n * (n - 1) / 2);
-    for (std::size_t a = 0; a < n; ++a)
-        for (std::size_t b = a + 1; b < n; ++b)
-            g.add_edge(a, b, 0.9);
-    std::fill(g.vertex_probs.begin(), g.vertex_probs.end(), 0.9);
-    g.set_terminals({0, n - 1});
+    const graph g = complete(12, 0.9);
     const reliability_bounds r = calculate_reliability_bounds(g, 1e-15);
     BOOST_TEST(r.lower <= r.upper);
     BOOST_TEST(r.upper - r.lower < 1e-9);
@@ -473,6 +477,21 @@ BOOST_AUTO_TEST_CASE(cutwidth_ordering_reduces_layer_size) {
     wide_default.calculate();
     // (Short-side sweep: boundary <= 6; a long-side sweep would reach 13.)
     BOOST_TEST(wide_default.get_statistics().max_boundary_size <= 6u);
+}
+
+// On a complete graph every vertex order is equivalent, so the cut-width
+// ordering keeps BFS's vertex order and differs only in the order of each
+// vertex's edges (departing, then most recent endpoints first; BFS: by id).
+// K9, p = 0.9: 7,968 states per layer by id, 6,552 departing-first.
+BOOST_AUTO_TEST_CASE(cutwidth_edge_order_reduces_layer_size) {
+    const graph g = complete(9, 0.9);
+    lbl_calculator by_bfs(g, generate_variable_ordering(g, ordering_strategy::bfs));
+    lbl_calculator by_default(g);
+    const double r_bfs = by_bfs.calculate();
+    const double r_default = by_default.calculate();
+    BOOST_TEST(r_bfs == r_default, boost::test_tools::tolerance(1e-12));
+    BOOST_TEST(by_default.get_statistics().max_layer_size <
+               by_bfs.get_statistics().max_layer_size);
 }
 
 // Frontier-local states have no Bell-number limit: a front of 31 vertices is

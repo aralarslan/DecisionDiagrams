@@ -12,9 +12,11 @@
  * - cutwidth: greedy edge-cut minimisation with candidate selection; the
  *   default for calculate_reliability() and build_diagram().
  *
- * Both run in O(V + E). When a vertex is emitted, the edges that become ready
- * are exactly its incident edges whose other endpoint was already emitted,
- * taken in adjacency (= edge id) order.
+ * When a vertex is emitted, the edges that become ready are exactly its
+ * incident edges whose other endpoint was already emitted. BFS and DFS take
+ * them in adjacency (= edge id) order, as in Wu & Sun's experiments; both run
+ * in O(V + E). The cut-width ordering sorts them (edge_order::departing_first,
+ * see emit_vertex), which changes the layer sizes but never the result.
  */
 
 #include "teddy/graphrel/variable_ordering.hpp"
@@ -34,27 +36,67 @@ namespace teddy::graphrel {
 
 namespace {
 
+/// Order of the edges that become ready when a vertex is emitted.
+enum class edge_order {
+    by_id,          ///< adjacency (= edge id) order
+    departing_first ///< see ordering_builder::emit_vertex
+};
+
 /// Emits vertices and their newly ready edges, tracking what was emitted.
 class ordering_builder {
 public:
-    explicit ordering_builder(const graph& g)
-        : g_(g), emitted_vertex_(g.num_vertices, 0), emitted_edge_(g.num_edges, 0) {
+    ordering_builder(const graph& g, edge_order order)
+        : g_(g)
+        , order_(order)
+        , emitted_vertex_(g.num_vertices, 0)
+        , emitted_edge_(g.num_edges, 0)
+        , remaining_(g.num_vertices, 0)
+        , emitted_at_(g.num_vertices, 0) {
         ordering_.reserve(g.num_vertices + g.num_edges);
+        for (const edge& e : g.edges) {
+            if (e.from != e.to) {
+                ++remaining_[e.from];
+                ++remaining_[e.to];
+            }
+        }
     }
 
     bool emitted(std::size_t v) const { return emitted_vertex_[v] != 0; }
 
+    /// Emit @p v and then its ready edges. With edge_order::departing_first
+    /// the edges are sorted by the other endpoint: fewest unemitted edges
+    /// first (an endpoint whose last edge this is leaves the front at once,
+    /// closing or pruning its block before the next branching), then the
+    /// most recently emitted endpoint first. Measured over meshes, complete
+    /// and random geometric graphs, this never enlarged the widest layer and
+    /// shrank it up to 2.2x (libgraphrel/audit/HANDOFF.md, §5.6).
     void emit_vertex(std::size_t v) {
         ordering_.emplace_back(variable_type::vertex, v);
         emitted_vertex_[v] = 1;
+        emitted_at_[v] = ++clock_;
+        ready_.clear();
         for (std::size_t eid : g_.adj[v]) {
             if (emitted_edge_[eid])
                 continue;
-            const edge& e = g_.edges[eid];
-            const std::size_t other = (e.from == v) ? e.to : e.from;
-            if (emitted_vertex_[other]) { // includes self-loops
-                ordering_.emplace_back(variable_type::edge, eid);
+            if (emitted_vertex_[neighbor_of(eid, v)]) { // includes self-loops
+                ready_.push_back(eid);
                 emitted_edge_[eid] = 1;
+            }
+        }
+        if (order_ == edge_order::departing_first) {
+            std::stable_sort(ready_.begin(), ready_.end(), [&](std::size_t a, std::size_t b) {
+                const std::size_t ua = neighbor_of(a, v), ub = neighbor_of(b, v);
+                if (remaining_[ua] != remaining_[ub])
+                    return remaining_[ua] < remaining_[ub];
+                return emitted_at_[ua] > emitted_at_[ub];
+            });
+        }
+        for (std::size_t eid : ready_) {
+            ordering_.emplace_back(variable_type::edge, eid);
+            const edge& e = g_.edges[eid];
+            if (e.from != e.to) {
+                --remaining_[e.from];
+                --remaining_[e.to];
             }
         }
     }
@@ -62,9 +104,19 @@ public:
     std::vector<variable> take() { return std::move(ordering_); }
 
 private:
+    std::size_t neighbor_of(std::size_t eid, std::size_t v) const {
+        const edge& e = g_.edges[eid];
+        return (e.from == v) ? e.to : e.from;
+    }
+
     const graph& g_;
+    edge_order order_;
     std::vector<char> emitted_vertex_;
     std::vector<char> emitted_edge_;
+    std::vector<std::size_t> remaining_;  ///< unemitted non-loop edges per vertex
+    std::vector<std::size_t> emitted_at_; ///< emission time per vertex (0 = not yet)
+    std::size_t clock_ = 0;
+    std::vector<std::size_t> ready_;
     std::vector<variable> ordering_;
 };
 
@@ -74,7 +126,7 @@ std::size_t neighbor(const graph& g, std::size_t eid, std::size_t v) {
 }
 
 std::vector<variable> bfs_ordering(const graph& g) {
-    ordering_builder out(g);
+    ordering_builder out(g, edge_order::by_id);
     std::vector<char> queued(g.num_vertices, 0);
     std::queue<std::size_t> q;
 
@@ -105,7 +157,7 @@ std::vector<variable> bfs_ordering(const graph& g) {
 }
 
 std::vector<variable> dfs_ordering(const graph& g) {
-    ordering_builder out(g);
+    ordering_builder out(g, edge_order::by_id);
     // Explicit stack of (vertex, next adjacency index): same visiting order as
     // the recursive formulation, without risking stack overflow on long paths.
     std::vector<std::pair<std::size_t, std::size_t>> stack;
@@ -298,7 +350,7 @@ std::vector<variable> cutwidth_ordering(const graph& g) {
         consider(greedy_cut_sequence(g, seed, nb));
     }
 
-    ordering_builder out(g);
+    ordering_builder out(g, edge_order::departing_first);
     for (std::size_t v : best)
         out.emit_vertex(v);
     return out.take();
