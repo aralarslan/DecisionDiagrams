@@ -19,14 +19,14 @@ using namespace teddy::graphrel;
 
 // vertex sequence -> variable ordering (vertex, then its newly ready edges)
 static std::vector<variable> to_ordering(const graph& g, const std::vector<std::size_t>& seq) {
-    std::vector<char> done_v(g.num_vertices, 0), done_e(g.num_edges, 0);
+    std::vector<char> done_v(g.num_vertices(), 0), done_e(g.num_edges(), 0);
     std::vector<variable> ord;
     for (std::size_t v : seq) {
         ord.emplace_back(variable_type::vertex, v);
         done_v[v] = 1;
-        for (std::size_t e : g.adj[v]) {
+        for (std::size_t e : g.get_incident_edges(v)) {
             if (done_e[e]) continue;
-            std::size_t o = g.edges[e].from == v ? g.edges[e].to : g.edges[e].from;
+            std::size_t o = g.edges()[e].from == v ? g.edges()[e].to : g.edges()[e].from;
             if (done_v[o]) { ord.emplace_back(variable_type::edge, e); done_e[e] = 1; }
         }
     }
@@ -40,15 +40,15 @@ static std::vector<std::size_t> vertex_seq(const std::vector<variable>& ord) {
 
 struct metrics { std::size_t fmax, cutmax; double cutsum; };
 static metrics measure(const graph& g, const std::vector<std::size_t>& seq) {
-    std::vector<char> done(g.num_vertices, 0);
-    std::vector<std::size_t> unproc(g.num_vertices, 0);
-    for (std::size_t v = 0; v < g.num_vertices; ++v)
-        for (std::size_t e : g.adj[v]) if (g.edges[e].from != g.edges[e].to) ++unproc[v];
+    std::vector<char> done(g.num_vertices(), 0);
+    std::vector<std::size_t> unproc(g.num_vertices(), 0);
+    for (std::size_t v = 0; v < g.num_vertices(); ++v)
+        for (std::size_t e : g.get_incident_edges(v)) if (g.edges()[e].from != g.edges()[e].to) ++unproc[v];
     std::size_t cut = 0, front = 0; metrics m{0, 0, 0};
     for (std::size_t v : seq) {
         done[v] = 1;
-        for (std::size_t e : g.adj[v]) {
-            std::size_t o = g.edges[e].from == v ? g.edges[e].to : g.edges[e].from;
+        for (std::size_t e : g.get_incident_edges(v)) {
+            std::size_t o = g.edges()[e].from == v ? g.edges()[e].to : g.edges()[e].from;
             if (o == v) continue;
             if (done[o]) { --cut; if (--unproc[o] == 0) --front; --unproc[v]; }
             else ++cut;
@@ -62,17 +62,17 @@ static metrics measure(const graph& g, const std::vector<std::size_t>& seq) {
 // Greedy: pick the reached vertex that grows the edge cut least (deg - 2*processed),
 // tie-break on the most recently touched (continues the current line), then id.
 static std::vector<std::size_t> greedy_cut(const graph& g, std::size_t seed, std::size_t first = SIZE_MAX) {
-    const std::size_t n = g.num_vertices;
+    const std::size_t n = g.num_vertices();
     std::vector<long> deg(n, 0), proc(n, 0), touch(n, -1);
     for (std::size_t v = 0; v < n; ++v)
-        for (std::size_t e : g.adj[v]) if (g.edges[e].from != g.edges[e].to) ++deg[v];
+        for (std::size_t e : g.get_incident_edges(v)) if (g.edges()[e].from != g.edges()[e].to) ++deg[v];
     std::vector<char> done(n, 0);
     std::vector<std::size_t> seq;
     long clock = 0;
     auto take = [&](std::size_t v) {
         done[v] = 1; seq.push_back(v); ++clock;
-        for (std::size_t e : g.adj[v]) {
-            std::size_t o = g.edges[e].from == v ? g.edges[e].to : g.edges[e].from;
+        for (std::size_t e : g.get_incident_edges(v)) {
+            std::size_t o = g.edges()[e].from == v ? g.edges()[e].to : g.edges()[e].from;
             if (o != v && !done[o]) { ++proc[o]; touch[o] = clock; }
         }
     };
@@ -134,7 +134,7 @@ static graph geometric(std::size_t n, double radius, std::uint64_t seed) {
 static std::size_t total_work = 0;
 static std::size_t gmax(graph g, const std::vector<variable>& ord, double& secs) {
     const double pv = std::getenv("LAB_PV") ? std::atof(std::getenv("LAB_PV")) : 0.9;
-    for (auto& p : g.vertex_probs) p = pv;
+    g.set_all_vertex_probs(pv);
     auto t0 = std::chrono::steady_clock::now();
     lbl_calculator calc(g, ord);
     calc.calculate();
@@ -158,10 +158,10 @@ int main(int argc, char** argv) {
         if (mode == "run" && name != argv[2]) continue;
         std::vector<std::pair<std::string, std::vector<std::size_t>>> cands;
         cands.emplace_back("bfs", vertex_seq(generate_variable_ordering(g)));
-        const std::size_t seed = g.terminals.front();
+        const std::size_t seed = g.terminals().front();
         cands.emplace_back("greedy", greedy_cut(g, seed));
-        for (std::size_t e : g.adj[seed]) {
-            std::size_t o = g.edges[e].from == seed ? g.edges[e].to : g.edges[e].from;
+        for (std::size_t e : g.get_incident_edges(seed)) {
+            std::size_t o = g.edges()[e].from == seed ? g.edges()[e].to : g.edges()[e].from;
             cands.emplace_back("greedy>" + std::to_string(o), greedy_cut(g, seed, o));
         }
         // selection: lexicographic (cutmax, Fmax, cutsum), first wins ties

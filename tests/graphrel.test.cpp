@@ -34,7 +34,7 @@ teddy::graphrel::graph make_bridge_graph(double p) {
     g.add_edge(1, 3, p);  // e3
     g.add_edge(2, 3, p);  // e4
 
-    g.terminals = {0, 3};
+    g.set_terminals({0, 3});
 
     return g;
 }
@@ -50,7 +50,7 @@ teddy::graphrel::graph make_wusun_bridge(double p) {
 
     // All vertices are fallible
     for (std::size_t i = 0; i < 4; ++i)
-        g.vertex_probs[i] = p;
+        g.set_vertex_prob(i, p);
 
     g.add_edge(0, 1, p);  // e1: v1-v2
     g.add_edge(0, 2, p);  // e2: v1-v3
@@ -58,7 +58,7 @@ teddy::graphrel::graph make_wusun_bridge(double p) {
     g.add_edge(1, 3, p);  // e4: v2-v4
     g.add_edge(2, 3, p);  // e5: v3-v4
 
-    g.terminals = {0, 3};  // v1, v4
+    g.set_terminals({0, 3});  // v1, v4
 
     return g;
 }
@@ -84,7 +84,7 @@ teddy::graphrel::graph make_mesh_graph(std::size_t rows, std::size_t cols,
     teddy::graphrel::graph g(num_vertices, num_edges);
 
     for (std::size_t i = 0; i < num_vertices; ++i)
-        g.vertex_probs[i] = vertex_rel;
+        g.set_vertex_prob(i, vertex_rel);
 
     // Horizontal edges
     for (std::size_t r = 0; r < rows; ++r) {
@@ -100,7 +100,7 @@ teddy::graphrel::graph make_mesh_graph(std::size_t rows, std::size_t cols,
         }
     }
 
-    g.terminals = {0, num_vertices - 1};
+    g.set_terminals({0, num_vertices - 1});
 
     return g;
 }
@@ -155,7 +155,7 @@ BOOST_AUTO_TEST_CASE(series_path_reliability) {
     teddy::graphrel::graph g(3, 2);
     g.add_edge(0, 1, p);
     g.add_edge(1, 2, p);
-    g.terminals = {0, 2};
+    g.set_terminals({0, 2});
 
     double r_lbl = teddy::graphrel::calculate_reliability(g);
     auto bdd     = teddy::graphrel::build_diagram(g);
@@ -173,7 +173,7 @@ BOOST_AUTO_TEST_CASE(parallel_edges_reliability) {
     teddy::graphrel::graph g(2, 2);
     g.add_edge(0, 1, p);
     g.add_edge(0, 1, p);
-    g.terminals = {0, 1};
+    g.set_terminals({0, 1});
 
     double expected = 1.0 - (1.0 - p) * (1.0 - p);
 
@@ -192,7 +192,7 @@ BOOST_AUTO_TEST_CASE(single_terminal_trivial) {
     teddy::graphrel::graph g(3, 2);
     g.add_edge(0, 1, 0.9);
     g.add_edge(1, 2, 0.9);
-    g.terminals = {1};  // only one terminal
+    g.set_terminals({1});  // only one terminal
 
     double r_lbl = teddy::graphrel::calculate_reliability(g);
     auto bdd     = teddy::graphrel::build_diagram(g);
@@ -289,26 +289,27 @@ BOOST_AUTO_TEST_SUITE(graphrel_unit_test)
 // ---- graph construction ----
 
 BOOST_AUTO_TEST_CASE(graph_construction) {
-    teddy::graphrel::graph g(4, 3);
-    BOOST_TEST(g.num_vertices == 4u);
-    BOOST_TEST(g.num_edges   == 3u);
+    teddy::graphrel::graph g(4, 3);  // 3 only reserves space
+    BOOST_TEST(g.num_vertices() == 4u);
+    BOOST_TEST(g.num_edges()   == 0u);
     g.add_edge(0, 1, 0.9);
     g.add_edge(1, 2, 0.8);
     g.add_edge(2, 3, 0.7);
-    BOOST_TEST(g.edges.size() == 3u);
-    BOOST_TEST(g.edges[0].from        == 0u);
-    BOOST_TEST(g.edges[0].to          == 1u);
-    BOOST_TEST(g.edges[0].prob == 0.9);
-    BOOST_TEST(g.edges[1].prob == 0.8);
+    BOOST_TEST(g.num_edges() == 3u);
+    BOOST_TEST(g.edges().size() == 3u);
+    BOOST_TEST(g.edges()[0].from        == 0u);
+    BOOST_TEST(g.edges()[0].to          == 1u);
+    BOOST_TEST(g.edges()[0].prob == 0.9);
+    BOOST_TEST(g.edges()[1].prob == 0.8);
     // vertex 1 is incident to e0 and e1
-    BOOST_TEST(g.adj[1].size() == 2u);
+    BOOST_TEST(g.get_incident_edges(1).size() == 2u);
 }
 
 BOOST_AUTO_TEST_CASE(graph_is_terminal) {
     teddy::graphrel::graph g(4, 2);
     g.add_edge(0, 1, 0.9);
     g.add_edge(2, 3, 0.9);
-    g.terminals = {0, 3};
+    g.set_terminals({0, 3});
     BOOST_TEST( g.is_terminal(0));
     BOOST_TEST(!g.is_terminal(1));
     BOOST_TEST(!g.is_terminal(2));
@@ -319,7 +320,7 @@ BOOST_AUTO_TEST_CASE(graph_validation) {
     teddy::graphrel::graph g(3, 2);
     g.add_edge(0, 1, 0.9);
     g.add_edge(1, 2, 0.9);
-    g.terminals = {0, 2};
+    g.set_terminals({0, 2});
     BOOST_TEST(g.validate());
 }
 
@@ -339,7 +340,7 @@ BOOST_AUTO_TEST_CASE(ordering_independence_chain) {
     teddy::graphrel::graph g(3, 2);
     g.add_edge(0, 1, 0.9);
     g.add_edge(1, 2, 0.9);
-    g.terminals = {0, 2};
+    g.set_terminals({0, 2});
 
     auto bfs_ord = teddy::graphrel::generate_variable_ordering(
         g, teddy::graphrel::ordering_strategy::bfs);

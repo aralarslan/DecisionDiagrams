@@ -23,14 +23,14 @@ constexpr std::uint64_t bit(std::uint8_t label) { return std::uint64_t{1} << (la
 
 frontier_plan::frontier_plan(const graph& g, const std::vector<variable>& ordering,
                              bool force_perfect_vertices) {
-    const std::size_t n = g.num_vertices;
+    const std::size_t n = g.num_vertices();
 
     // Remaining non-loop edges per vertex. Self-loops never connect anything,
     // so they do not keep a vertex on the front.
     std::vector<std::uint32_t> remaining(n, 0);
     for (const variable& var : ordering) {
         if (var.type == variable_type::edge) {
-            const edge& e = g.edges[var.id];
+            const edge& e = g.edges()[var.id];
             if (e.from != e.to) {
                 ++remaining[e.from];
                 ++remaining[e.to];
@@ -38,12 +38,12 @@ frontier_plan::frontier_plan(const graph& g, const std::vector<variable>& orderi
         }
     }
     std::vector<char> is_terminal(n, 0);
-    for (std::size_t t : g.terminals)
+    for (std::size_t t : g.terminals())
         is_terminal[t] = 1;
-    auto unreached = static_cast<std::uint32_t>(g.terminals.size());
+    auto unreached = static_cast<std::uint32_t>(g.terminals().size());
 
     constexpr std::size_t unprocessed = static_cast<std::size_t>(-1);
-    std::vector<std::size_t> edge_level(g.num_edges, unprocessed);
+    std::vector<std::size_t> edge_level(g.num_edges(), unprocessed);
     for (std::size_t l = 0; l < ordering.size(); ++l)
         if (ordering[l].type == variable_type::edge)
             edge_level[ordering[l].id] = l;
@@ -69,7 +69,7 @@ frontier_plan::frontier_plan(const graph& g, const std::vector<variable>& orderi
             const std::size_t v = var.id;
             s.is_vertex = true;
             s.terminal = is_terminal[v] != 0;
-            s.forced = force_perfect_vertices && g.vertex_probs[v] >= 1.0;
+            s.forced = force_perfect_vertices && g.vertex_probs()[v] >= 1.0;
             if (s.terminal)
                 --unreached;
             s.enters = remaining[v] > 0;
@@ -79,7 +79,7 @@ frontier_plan::frontier_plan(const graph& g, const std::vector<variable>& orderi
                 on_front[v] = 1;
             }
         } else {
-            const edge& e = g.edges[var.id];
+            const edge& e = g.edges()[var.id];
             s.forced = e.prob >= 1.0;
             if (e.from == e.to) {
                 s.loop = true;
@@ -111,8 +111,8 @@ frontier_plan::frontier_plan(const graph& g, const std::vector<variable>& orderi
         s.inner_offset = inner_edges_.size();
         for (std::size_t i = 0; i < front.size(); ++i) {
             const std::uint32_t v = front[i];
-            for (std::size_t eid : g.adj[v]) {
-                const edge& e = g.edges[eid];
+            for (std::size_t eid : g.get_incident_edges(v)) {
+                const edge& e = g.edges()[eid];
                 if (e.from == e.to || edge_level[eid] <= level)
                     continue; // self-loop or already processed
                 const std::size_t w = (e.from == v) ? e.to : e.from;
@@ -144,7 +144,7 @@ frontier_plan::frontier_plan(const graph& g, const std::vector<variable>& orderi
 // positions share a future component, which components hold unreached
 // terminals, and how many such components touch no front vertex.
 void frontier_plan::compute_lookahead(const graph& g, const std::vector<variable>& ordering) {
-    const std::size_t n = g.num_vertices;
+    const std::size_t n = g.num_vertices();
     std::vector<std::uint32_t> parent(n), terminals_in(n, 0);
     for (std::size_t v = 0; v < n; ++v)
         parent[v] = static_cast<std::uint32_t>(v);
@@ -157,7 +157,7 @@ void frontier_plan::compute_lookahead(const graph& g, const std::vector<variable
     };
     std::size_t components_with_terminals = 0;
     std::vector<char> is_terminal(n, 0);
-    for (std::size_t t : g.terminals)
+    for (std::size_t t : g.terminals())
         is_terminal[t] = 1;
 
     component_.assign(front_after_.size(), 0);
@@ -186,7 +186,7 @@ void frontier_plan::compute_lookahead(const graph& g, const std::vector<variable
 
         const variable& var = ordering[l];
         if (var.type == variable_type::edge) {
-            const edge& e = g.edges[var.id];
+            const edge& e = g.edges()[var.id];
             std::uint32_t a = find(static_cast<std::uint32_t>(e.from));
             std::uint32_t b = find(static_cast<std::uint32_t>(e.to));
             if (a != b) {

@@ -229,9 +229,9 @@ graph read_graph(std::istream &input) {
                          std::to_string(raw_edges.size()));
 
   graph g(num_vertices, num_edges);
-  std::fill(g.vertex_probs.begin(), g.vertex_probs.end(), default_vertex_rel);
+  g.set_all_vertex_probs(default_vertex_rel);
   for (auto &[vertex, rel] : vertex_overrides)
-    g.vertex_probs[vertex] = rel;
+    g.set_vertex_prob(vertex, rel);
   for (auto &[from, to, rel] : raw_edges)
     g.add_edge(from, to, rel);
   g.set_terminals(std::move(terminals)); // sorts and removes duplicates
@@ -267,12 +267,12 @@ void write_graph(std::ostream &output, const graph &g,
   }
 
   // Problem line — always write defaults as 1.0
-  output << "p reliability " << g.num_vertices << " " << g.edges.size()
+  output << "p reliability " << g.num_vertices() << " " << g.edges().size()
          << "\n";
 
   // Terminals
   output << "t";
-  for (auto v : g.terminals)
+  for (auto v : g.terminals())
     output << " " << v;
   output << "\n";
 
@@ -285,13 +285,13 @@ void write_graph(std::ostream &output, const graph &g,
   output << std::defaultfloat
          << std::setprecision(std::numeric_limits<double>::max_digits10);
 
-  for (const auto &e : g.edges)
+  for (const auto &e : g.edges())
     output << "e " << e.from << " " << e.to << " " << e.prob << "\n";
 
   // Vertex probabilities — only write non-1.0 vertices
-  for (std::size_t i = 0; i < g.num_vertices; ++i) {
-    if (g.vertex_probs[i] != 1.0)
-      output << "v " << i << " " << g.vertex_probs[i] << "\n";
+  for (std::size_t i = 0; i < g.num_vertices(); ++i) {
+    if (g.vertex_probs()[i] != 1.0)
+      output << "v " << i << " " << g.vertex_probs()[i] << "\n";
   }
 
   output.imbue(old_locale);

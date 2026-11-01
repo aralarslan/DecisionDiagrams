@@ -47,13 +47,13 @@ teddy::graphrel::graph make_bridge(double p)
 {
     teddy::graphrel::graph g(4, 5);
     for (std::size_t i = 0; i < 4; ++i)
-        g.vertex_probs[i] = p;
+        g.set_vertex_prob(i, p);
     g.add_edge(0, 1, p);
     g.add_edge(0, 2, p);
     g.add_edge(1, 2, p);
     g.add_edge(1, 3, p);
     g.add_edge(2, 3, p);
-    g.terminals = {0, 3};
+    g.set_terminals({0, 3});
     return g;
 }
 
@@ -69,14 +69,14 @@ teddy::graphrel::graph make_mesh(std::size_t rows, std::size_t cols, double p)
     std::size_t ne = rows * (cols - 1) + (rows - 1) * cols;
     teddy::graphrel::graph g(nv, ne);
     for (std::size_t i = 0; i < nv; ++i)
-        g.vertex_probs[i] = p;
+        g.set_vertex_prob(i, p);
     for (std::size_t r = 0; r < rows; ++r)
         for (std::size_t c = 0; c < cols - 1; ++c)
             g.add_edge(r * cols + c, r * cols + c + 1, p);
     for (std::size_t r = 0; r < rows - 1; ++r)
         for (std::size_t c = 0; c < cols; ++c)
             g.add_edge(r * cols + c, (r + 1) * cols + c, p);
-    g.terminals = {0, nv - 1};
+    g.set_terminals({0, nv - 1});
     return g;
 }
 
@@ -107,9 +107,9 @@ auto main() -> int
     print_header("1. Bridge network — LBL and BDD paths");
     {
         auto g = make_bridge(0.9);
-        std::cout << "  V=" << g.num_vertices
-                  << "  E=" << g.num_edges
-                  << "  |K|=" << g.terminals.size() << "\n";
+        std::cout << "  V=" << g.num_vertices()
+                  << "  E=" << g.num_edges()
+                  << "  |K|=" << g.terminals().size() << "\n";
 
         // Layer-by-layer scalar (memory-efficient, no BDD allocated)
         double r_lbl = teddy::graphrel::calculate_reliability(g);
@@ -152,7 +152,7 @@ auto main() -> int
             auto g = make_mesh(r, c, 0.9);
             char buf[32];
             std::snprintf(buf, sizeof(buf), "%zux%zu mesh LBL", r, c);
-            std::cout << "  V=" << g.num_vertices << "  E=" << g.num_edges << "\n";
+            std::cout << "  V=" << g.num_vertices() << "  E=" << g.num_edges() << "\n";
             double rl = teddy::graphrel::calculate_reliability(g);
             print_result(buf, rl, exp, 1e-6);
         }

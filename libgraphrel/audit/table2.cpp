@@ -15,12 +15,12 @@ using namespace teddy::graphrel;
 
 static std::vector<variable> by_id(const graph& g) {
     std::vector<variable> ord;
-    std::vector<char> placed(g.num_vertices, 0), done(g.num_edges, 0);
-    for (std::size_t v = 0; v < g.num_vertices; ++v) {
+    std::vector<char> placed(g.num_vertices(), 0), done(g.num_edges(), 0);
+    for (std::size_t v = 0; v < g.num_vertices(); ++v) {
         ord.emplace_back(variable_type::vertex, v);
         placed[v] = 1;
-        for (std::size_t e : g.adj[v]) {
-            const std::size_t o = g.edges[e].from == v ? g.edges[e].to : g.edges[e].from;
+        for (std::size_t e : g.get_incident_edges(v)) {
+            const std::size_t o = g.edges()[e].from == v ? g.edges()[e].to : g.edges()[e].from;
             if (!done[e] && placed[o]) { done[e] = 1; ord.emplace_back(variable_type::edge, e); }
         }
     }
@@ -53,7 +53,7 @@ int main(int argc, char** argv) {
             for (std::size_t b = a + 1; b < n; ++b) g.add_edge(a, b, 0.9);
         g.set_terminals({0, t2});
     }
-    for (auto& p : g.vertex_probs) p = 0.9;
+    g.set_all_vertex_probs(0.9);
     auto ord = strat == "paper" ? by_id(g)
              : generate_variable_ordering(g, strat == "bfs" ? ordering_strategy::bfs : ordering_strategy::cutwidth);
     auto t0 = std::chrono::steady_clock::now();
@@ -63,7 +63,7 @@ int main(int argc, char** argv) {
     auto st = calc.get_statistics();
     rusage u{}; getrusage(RUSAGE_SELF, &u);
     std::printf("%-16s %-8s V=%zu E=%zu L=%zu  R=%.6f  B1=%zu  Gmax=%zu  F=%zu  work=%zu  time=%.1fs  peakRSS=%ldMB  tables=%.1fMB\n",
-                name.c_str(), strat.c_str(), g.num_vertices, g.num_edges, st.num_layers, R,
+                name.c_str(), strat.c_str(), g.num_vertices(), g.num_edges(), st.num_layers, R,
                 st.max_branching_layer_size, st.max_layer_size, st.max_boundary_size,
                 st.total_decompositions, s, u.ru_maxrss / 1024, st.peak_table_bytes / 1048576.0);
 }

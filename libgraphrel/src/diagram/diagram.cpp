@@ -56,7 +56,7 @@ namespace {
 using bdd_t = teddy::bss_manager::diagram_t;
 
 bool has_imperfect_vertices(const graph& g) {
-    for (double rel : g.vertex_probs) {
+    for (double rel : g.vertex_probs()) {
         if (rel < 1.0)
             return true;
     }
@@ -82,8 +82,8 @@ public:
         : net_(g)
         , ordering_(ordering)
         , mgr_(mgr)
-        , edge_to_var_(g.num_edges, -1)
-        , vertex_to_var_(g.num_vertices, -1)
+        , edge_to_var_(g.num_edges(), -1)
+        , vertex_to_var_(g.num_vertices(), -1)
         , has_imperfect_(has_imperfect_vertices(g))
     {
         init_variable_index_mappings();
@@ -98,8 +98,8 @@ public:
     // depth of the diagram is not limited by the call stack.
     bdd_t build() {
         // |K| = 1: the function is just "that vertex works".
-        if (net_.terminals.size() == 1) {
-            const teddy::int32 var = vertex_to_var_[net_.terminals.front()];
+        if (net_.terminals().size() == 1) {
+            const teddy::int32 var = vertex_to_var_[net_.terminals().front()];
             return var >= 0 ? mgr_.make_ite(var, mgr_.constant(1), mgr_.constant(0))
                             : mgr_.constant(1);
         }
@@ -221,16 +221,16 @@ reliability_diagram build_diagram(const graph& g, teddy::int64 pool_size) {
     const auto& e2v = builder.edge_to_var();
     const auto& v2v = builder.vertex_to_var();
 
-    for (std::size_t edge_id = 0; edge_id < g.num_edges; ++edge_id) {
+    for (std::size_t edge_id = 0; edge_id < g.num_edges(); ++edge_id) {
         teddy::int32 idx = e2v[edge_id];
         if (idx >= 0)
-            probs[static_cast<std::size_t>(idx)] = g.edges[edge_id].prob;
+            probs[static_cast<std::size_t>(idx)] = g.edges()[edge_id].prob;
     }
     if (has_imperfect) {
-        for (std::size_t v = 0; v < g.num_vertices; ++v) {
+        for (std::size_t v = 0; v < g.num_vertices(); ++v) {
             teddy::int32 idx = v2v[v];
             if (idx >= 0)
-                probs[static_cast<std::size_t>(idx)] = g.vertex_probs[v];
+                probs[static_cast<std::size_t>(idx)] = g.vertex_probs()[v];
         }
     }
 

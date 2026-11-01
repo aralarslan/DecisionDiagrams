@@ -37,8 +37,7 @@ static gr::graph make_mesh(std::size_t rows, std::size_t cols,
     std::size_t ne = rows * (cols - 1) + (rows - 1) * cols;
     gr::graph g(nv, ne);
 
-    for (auto& p : g.vertex_probs)
-        p = p_vertex;
+    g.set_all_vertex_probs(p_vertex);
 
     // Horizontal edges
     for (std::size_t r = 0; r < rows; ++r)
@@ -50,7 +49,7 @@ static gr::graph make_mesh(std::size_t rows, std::size_t cols,
         for (std::size_t c = 0; c < cols; ++c)
             g.add_edge(r * cols + c, (r + 1) * cols + c, p_edge);
 
-    g.terminals = {0, nv - 1};
+    g.set_terminals({0, nv - 1});
     return g;
 }
 
@@ -89,8 +88,8 @@ static ScalingResult run(int rows, int cols,
 
     ScalingResult res;
     res.name     = std::to_string(rows) + "x" + std::to_string(cols);
-    res.vertices = g.num_vertices;
-    res.edges    = g.edges.size();
+    res.vertices = g.num_vertices();
+    res.edges    = g.edges().size();
 
     // 1. LBL — use internal lbl_calculator to access statistics
     {

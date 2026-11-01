@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <sstream>
+#include <stdexcept>
 #include <sys/resource.h>
 
 using namespace teddy::graphrel;
@@ -23,7 +24,7 @@ static graph grid(std::size_t r, std::size_t c, double p) {
             if (j + 1 < c) g.add_edge(i * c + j, i * c + j + 1, p);
             if (i + 1 < r) g.add_edge(i * c + j, (i + 1) * c + j, p);
         }
-    g.terminals = {0, r * c - 1};
+    g.set_terminals({0, r * c - 1});
     return g;
 }
 
@@ -34,73 +35,89 @@ int main(int argc, char** argv) {
     if (all || what == "ghost") {
         // s=0, v=1 (p_v=0.5), t=2; perfect edges 0-1, 1-2; edge 0-2 with p=0.5
         graph g(3, 3);
-        g.vertex_probs[1] = 0.5;
+        g.set_vertex_prob(1, 0.5);
         g.add_edge(0, 1, 1.0);
         g.add_edge(1, 2, 1.0);
         g.add_edge(0, 2, 0.5);
-        g.terminals = {0, 2};
+        g.set_terminals({0, 2});
         std::printf("[ghost] exact=0.75 lbl=%.6f bdd=%.6f\n", calculate_reliability(g), bdd_r(g));
     }
     if (all || what == "single") {
         graph g(2, 1);
-        g.vertex_probs[0] = 0.3;
+        g.set_vertex_prob(0, 0.3);
         g.add_edge(0, 1, 0.5);
-        g.terminals = {0};
+        g.set_terminals({0});
         std::printf("[single-terminal] exact=0.3 lbl=%.6f bdd=%.6f\n", calculate_reliability(g), bdd_r(g));
     }
     if (all || what == "unsorted") {
-        // path 0-1-2, terminals {2,0} unsorted, terminal 0 unreliable
+        // path 0-1-2, terminals {2,0} unsorted, terminal 0 unreliable. Since
+        // graph became a class, set_terminals() sorts them: exact again.
         graph g(3, 2);
-        g.vertex_probs[0] = 0.5;
+        g.set_vertex_prob(0, 0.5);
         g.add_edge(0, 1, 0.9);
         g.add_edge(1, 2, 0.9);
-        g.terminals = {2, 0};
+        g.set_terminals({2, 0});
         std::printf("[unsorted terminals] exact=%.6f validate=%d lbl=%.6f bdd=%.6f\n",
                     0.5 * 0.81, g.validate(), calculate_reliability(g), bdd_r(g));
     }
     if (all || what == "ordering") {
         // path 0-1-2 with unreliable middle vertex, edges ordered before vertices
         graph g(3, 2);
-        g.vertex_probs[1] = 0.5;
+        g.set_vertex_prob(1, 0.5);
         g.add_edge(0, 1, 0.9);
         g.add_edge(1, 2, 0.9);
-        g.terminals = {0, 2};
+        g.set_terminals({0, 2});
         std::vector<variable> ord{{variable_type::edge, 0}, {variable_type::edge, 1},
                                   {variable_type::vertex, 0}, {variable_type::vertex, 1},
                                   {variable_type::vertex, 2}};
         std::vector<variable> partial{{variable_type::vertex, 0}, {variable_type::edge, 0}};
-        std::printf("[custom ordering] exact=%.6f edges-first=%.6f missing-vars=%.6f\n",
-                    0.5 * 0.81, calculate_reliability(g, ord), calculate_reliability(g, partial));
+        // At audit time these returned 0.81 and 0.0; they are now rejected.
+        for (const auto* o : {&ord, &partial}) {
+            try {
+                std::printf("[custom ordering] exact=%.6f got=%.6f\n", 0.5 * 0.81,
+                            calculate_reliability(g, *o));
+            } catch (const std::invalid_argument& e) {
+                std::printf("[custom ordering] rejected: %s\n", e.what());
+            }
+        }
     }
     if (all || what == "parse") {
-        std::istringstream in("p reliability 2 1\nt 0 1\ne 0 1 O.9\n");  // letter O typo
-        graph g = read_graph(in);
-        std::printf("[parser] 'e 0 1 O.9' parsed prob=%g (silently)\n", g.edges[0].prob);
-        std::istringstream in2("p reliability 2 1 0.9x\nt 0 1\ne 0 1\n");
-        graph g2 = read_graph(in2);
-        std::printf("[parser] 'p ... 0.9x' default edge prob=%g, trailing junk accepted\n", g2.edges[0].prob);
+        // At audit time both inputs were accepted silently; they now throw.
+        for (const char* text : {"p reliability 2 1\nt 0 1\ne 0 1 O.9\n",     // letter O typo
+                                 "p reliability 2 1 0.9x\nt 0 1\ne 0 1\n"}) { // trailing junk
+            std::istringstream in(text);
+            try {
+                graph g = read_graph(in);
+                std::printf("[parser] accepted, edge prob=%g\n", g.edges()[0].prob);
+            } catch (const std::exception& e) {
+                std::printf("[parser] rejected: %s\n", e.what());
+            }
+        }
     }
     if (all || what == "roundtrip") {
         graph g(2, 1);
         g.add_edge(0, 1, 0.1 + 0.2);  // 0.30000000000000004
-        g.terminals = {0, 1};
+        g.set_terminals({0, 1});
         std::stringstream ss;
         write_graph(ss, g);
         graph h = read_graph(ss);
-        std::printf("[roundtrip] exact bits preserved: %s\n", h.edges[0].prob == g.edges[0].prob ? "yes" : "NO");
+        std::printf("[roundtrip] exact bits preserved: %s\n", h.edges()[0].prob == g.edges()[0].prob ? "yes" : "NO");
     }
     if (all || what == "api") {
         graph g(3, 0);
         g.add_edge(0, 1, 0.9);
-        g.terminals = {0, 1};
+        g.set_terminals({0, 1});
+        // graph(n, m) now only reserves m edges: num_edges() counts add_edge().
         std::printf("[api] graph(3,0)+add_edge: num_edges=%zu edges.size()=%zu validate=%d\n",
-                    g.num_edges, g.edges.size(), g.validate());
+                    g.num_edges(), g.edges().size(), g.validate());
         graph h(2, 2);
         h.add_edge(0, 1, 1.0);
         h.add_edge(0, 1, 0.5);
-        h.terminals = {0, 1};
+        h.set_terminals({0, 1});
         auto d = build_diagram(h);
-        std::printf("[api] perfect edge 0 -> edge_var=%d (header says -1), var_count=%d\n",
+        // At audit time the header promised -1 here; it now documents that every
+        // edge has a variable.
+        std::printf("[api] perfect edge 0 -> edge_var=%d, var_count=%d\n",
                     d.edge_var(0), d.manager.get_var_count());
     }
     if (what == "ladder") {
@@ -110,7 +127,7 @@ int main(int argc, char** argv) {
         auto t0 = clk::now();
         double r = calculate_reliability(g);
         std::printf("[ladder 2x%zu] V+E=%zu R=%.6f time=%.0f ms peak RSS=%ld MB\n",
-                    n, g.num_vertices + g.num_edges, r, ms(t0), rss_mb());
+                    n, g.num_vertices() + g.num_edges(), r, ms(t0), rss_mb());
     }
     if (what == "order") {
         std::size_t n = argc > 2 ? std::strtoul(argv[2], nullptr, 10) : 40;

@@ -1,49 +1,17 @@
 // G^max under BFS vs row-major sweep (vertex priority kept), meshes with p=0.9 everywhere.
 #include "lbl/lbl_detail.hpp"
-#include "common/bell_cache.hpp"
-#include "common/partition.hpp"
 #include <teddy/graphrel/graphrel.hpp>
 #include <chrono>
 #include <cstdio>
-#include <functional>
+#include <string>
 using namespace teddy::graphrel;
 
-// Carlier & Lucet (1996) Algorithm 2, transcribed literally (1-indexed PART).
-static std::uint64_t cl_number(const std::vector<int>& part1, const bell_cache& c) {
-    std::size_t F = part1.size();
-    std::uint64_t num = 1; int j = 1;
-    for (std::size_t i = 2; i <= F; ++i) {
-        if (part1[i - 1] == j + 1) { ++j; num += c.stirling(i - 1, j) * j; }
-        else num = (num - 1) * j + part1[i - 1];
-    }
-    std::uint64_t base = 0;
-    for (int h = 1; h < j; ++h) base += c.stirling(F, h);
-    return num + base;
-}
+// The audit-time "numbering" mode, which checked the partition numbering of
+// the previous engine against Carlier & Lucet's Algorithm 2 (README.md), was
+// removed with that engine: frontier states store block labels directly.
+// usage: sweep <rows> <cols> [skip-bfs]
 
 int main(int argc, char** argv) {
-    if (argc > 1 && std::string(argv[1]) == "numbering") {
-        bell_cache c(14);
-        std::size_t checked = 0, bad = 0;
-        for (std::size_t F = 1; F <= 10; ++F) {
-            // enumerate all restricted growth strings of length F
-            std::vector<int> a(F, 1);
-            std::vector<char> seen(c.bell(F) + 1, 0);
-            std::function<void(std::size_t, int)> rec = [&](std::size_t i, int mx) {
-                if (i == F) {
-                    std::uint64_t n1 = partition_to_number(a, mx, c), n2 = cl_number(a, c);
-                    ++checked;
-                    if (n1 != n2 || n1 < 1 || n1 > c.bell(F) || seen[n1] || number_to_partition(n1, F, c) != a) ++bad;
-                    else seen[n1] = 1;
-                    return;
-                }
-                for (int b = 1; b <= mx + 1; ++b) { a[i] = b; rec(i + 1, std::max(mx, b)); }
-            };
-            rec(1, 1);
-        }
-        std::printf("numbering: %zu partitions (F<=10) checked against C&L Alg.2, bijective onto [1,B(F)], %zu bad\n", checked, bad);
-        return 0;
-    }
     std::size_t r = std::strtoul(argv[1], nullptr, 10), c = std::strtoul(argv[2], nullptr, 10);
     graph g(r * c, r * (c - 1) + c * (r - 1));
     for (std::size_t i = 0; i < r; ++i)
@@ -51,14 +19,14 @@ int main(int argc, char** argv) {
             if (j + 1 < c) g.add_edge(i * c + j, i * c + j + 1, 0.9);
             if (i + 1 < r) g.add_edge(i * c + j, (i + 1) * c + j, 0.9);
         }
-    for (auto& p : g.vertex_probs) p = 0.9;
-    g.terminals = {0, r * c - 1};
+    g.set_all_vertex_probs(0.9);
+    g.set_terminals({0, r * c - 1});
     // row-major sweep: vertex v, then every edge to an earlier vertex
     std::vector<variable> sweep;
     for (std::size_t v = 0; v < r * c; ++v) {
         sweep.emplace_back(variable_type::vertex, v);
-        for (auto e : g.adj[v]) {
-            std::size_t o = g.edges[e].from == v ? g.edges[e].to : g.edges[e].from;
+        for (auto e : g.get_incident_edges(v)) {
+            std::size_t o = g.edges()[e].from == v ? g.edges()[e].to : g.edges()[e].from;
             if (o < v) sweep.emplace_back(variable_type::edge, e);
         }
     }

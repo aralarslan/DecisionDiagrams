@@ -12,7 +12,8 @@
  *
  * The algorithms assume (Wu & Sun 2024 §2.1; Carlier & Lucet 1996 §2;
  * Kawahara et al. 2019 §3.1):
- *   - a well-formed graph with probabilities in [0, 1],
+ *   - a well-formed graph with probabilities in [0, 1] (guaranteed by the
+ *     graph class),
  *   - a non-empty, sorted, duplicate-free terminal set,
  *   - for the layer-by-layer algorithm, an ordering that lists every vertex and
  *     edge exactly once and places each vertex before its incident edges
@@ -21,11 +22,11 @@
 
 namespace teddy::graphrel::detail {
 
-/// Returns nullptr if @p g is well-formed, otherwise a description of the
-/// first problem found.
+/// Returns nullptr if @p g can be analysed (it has a terminal set),
+/// otherwise a description of the problem.
 const char* find_graph_problem(const graph& g);
 
-/// Throws std::invalid_argument("<who>: <problem>") unless @p g is well-formed.
+/// Throws std::invalid_argument("<who>: <problem>") unless @p g can be analysed.
 /// Returns @p g so it can be used in constructor initializer lists.
 const graph& require_valid(const graph& g, const char* who);
 

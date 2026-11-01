@@ -12,29 +12,29 @@
 using namespace teddy::graphrel;
 
 static double brute(const graph& g) {
-    const std::size_t V = g.num_vertices, E = g.edges.size();
+    const std::size_t V = g.num_vertices(), E = g.edges().size();
     const std::size_t n = V + E;
     double total = 0.0;
     for (std::uint64_t m = 0; m < (1ULL << n); ++m) {
         double p = 1.0;
         for (std::size_t i = 0; i < V; ++i)
-            p *= (m >> i & 1) ? g.vertex_probs[i] : 1.0 - g.vertex_probs[i];
+            p *= (m >> i & 1) ? g.vertex_probs()[i] : 1.0 - g.vertex_probs()[i];
         for (std::size_t j = 0; j < E; ++j)
-            p *= (m >> (V + j) & 1) ? g.edges[j].prob : 1.0 - g.edges[j].prob;
+            p *= (m >> (V + j) & 1) ? g.edges()[j].prob : 1.0 - g.edges()[j].prob;
         if (p == 0.0) continue;
         bool ok = true;
-        for (auto t : g.terminals) ok &= (m >> t & 1) != 0;
+        for (auto t : g.terminals()) ok &= (m >> t & 1) != 0;
         if (!ok) continue;
         std::vector<std::size_t> par(V);
         std::iota(par.begin(), par.end(), 0);
         auto find = [&](std::size_t x) { while (par[x] != x) x = par[x] = par[par[x]]; return x; };
         for (std::size_t j = 0; j < E; ++j) {
-            const auto& e = g.edges[j];
+            const auto& e = g.edges()[j];
             if ((m >> (V + j) & 1) && (m >> e.from & 1) && (m >> e.to & 1))
                 par[find(e.from)] = find(e.to);
         }
-        auto r = find(g.terminals.front());
-        for (auto t : g.terminals) ok &= find(t) == r;
+        auto r = find(g.terminals().front());
+        for (auto t : g.terminals()) ok &= find(t) == r;
         if (ok) total += p;
     }
     return total;
@@ -43,21 +43,21 @@ static double brute(const graph& g) {
 // Random ordering that respects the vertex-priority principle (every edge comes
 // after both of its endpoints) but is otherwise arbitrary -- not BFS/DFS-shaped.
 static std::vector<variable> random_vertex_priority(const graph& g, std::mt19937_64& rng) {
-    std::vector<std::size_t> verts(g.num_vertices);
+    std::vector<std::size_t> verts(g.num_vertices());
     std::iota(verts.begin(), verts.end(), 0);
     std::shuffle(verts.begin(), verts.end(), rng);
-    std::vector<char> placed(g.num_vertices, 0), done(g.edges.size(), 0);
+    std::vector<char> placed(g.num_vertices(), 0), done(g.edges().size(), 0);
     std::vector<variable> ord;
     std::vector<std::size_t> ready;
     std::size_t next_v = 0;
-    while (ord.size() < g.num_vertices + g.edges.size()) {
+    while (ord.size() < g.num_vertices() + g.edges().size()) {
         bool take_vertex = next_v < verts.size() && (ready.empty() || rng() % 2);
         if (take_vertex) {
             std::size_t v = verts[next_v++];
             placed[v] = 1;
             ord.emplace_back(variable_type::vertex, v);
-            for (std::size_t e = 0; e < g.edges.size(); ++e)
-                if (!done[e] && placed[g.edges[e].from] && placed[g.edges[e].to]) {
+            for (std::size_t e = 0; e < g.edges().size(); ++e)
+                if (!done[e] && placed[g.edges()[e].from] && placed[g.edges()[e].to]) {
                     done[e] = 1;
                     ready.push_back(e);
                 }
@@ -73,8 +73,8 @@ static std::vector<variable> random_vertex_priority(const graph& g, std::mt19937
 // Completely random permutation of all variables (violates vertex priority).
 static std::vector<variable> random_any(const graph& g, std::mt19937_64& rng) {
     std::vector<variable> ord;
-    for (std::size_t v = 0; v < g.num_vertices; ++v) ord.emplace_back(variable_type::vertex, v);
-    for (std::size_t e = 0; e < g.edges.size(); ++e) ord.emplace_back(variable_type::edge, e);
+    for (std::size_t v = 0; v < g.num_vertices(); ++v) ord.emplace_back(variable_type::vertex, v);
+    for (std::size_t e = 0; e < g.edges().size(); ++e) ord.emplace_back(variable_type::edge, e);
     std::shuffle(ord.begin(), ord.end(), rng);
     return ord;
 }
@@ -127,13 +127,12 @@ int main(int argc, char** argv) {
             double p = perfect_edges && rng() % 2 ? 1.0 : rand_p();
             g.add_edge(a, b, p);
         }
-        if (vert) for (auto& p : g.vertex_probs) p = paper ? rand_p() : (rng() % 3 ? pick() : 1.0);
+        if (vert) for (std::size_t v = 0; v < V; ++v) g.set_vertex_prob(v, paper ? rand_p() : (rng() % 3 ? pick() : 1.0));
         std::size_t k = (kmin2 ? 2 : 1) + rng() % std::min<std::size_t>(V - (kmin2 ? 1 : 0), 3);
         std::vector<std::size_t> ids(V);
         std::iota(ids.begin(), ids.end(), 0);
         std::shuffle(ids.begin(), ids.end(), rng);
-        g.terminals.assign(ids.begin(), ids.begin() + k);
-        std::sort(g.terminals.begin(), g.terminals.end());
+        g.set_terminals({ids.begin(), ids.begin() + static_cast<std::ptrdiff_t>(k)});
 
         double rb = brute(g);
         double rl = calculate_reliability(g);

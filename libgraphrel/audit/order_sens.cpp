@@ -21,8 +21,8 @@ int main(int argc, char** argv) {
         if (t > 0) std::shuffle(e.begin(), e.end(), rng);
         graph g(r * c, e.size());
         for (auto [a, b] : e) g.add_edge(a, b, 0.9);
-        for (auto& p : g.vertex_probs) p = 0.9;
-        g.terminals = {0, r * c - 1};
+        g.set_all_vertex_probs(0.9);
+        g.set_terminals({0, r * c - 1});
         for (auto strat : {ordering_strategy::bfs, ordering_strategy::dfs}) {
             auto ord = generate_variable_ordering(g, strat);
             lbl_calculator calc(g, ord);

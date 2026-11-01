@@ -49,12 +49,12 @@ public:
     ordering_builder(const graph& g, edge_order order)
         : g_(g)
         , order_(order)
-        , emitted_vertex_(g.num_vertices, 0)
-        , emitted_edge_(g.num_edges, 0)
-        , remaining_(g.num_vertices, 0)
-        , emitted_at_(g.num_vertices, 0) {
-        ordering_.reserve(g.num_vertices + g.num_edges);
-        for (const edge& e : g.edges) {
+        , emitted_vertex_(g.num_vertices(), 0)
+        , emitted_edge_(g.num_edges(), 0)
+        , remaining_(g.num_vertices(), 0)
+        , emitted_at_(g.num_vertices(), 0) {
+        ordering_.reserve(g.num_vertices() + g.num_edges());
+        for (const edge& e : g.edges()) {
             if (e.from != e.to) {
                 ++remaining_[e.from];
                 ++remaining_[e.to];
@@ -76,7 +76,7 @@ public:
         emitted_vertex_[v] = 1;
         emitted_at_[v] = ++clock_;
         ready_.clear();
-        for (std::size_t eid : g_.adj[v]) {
+        for (std::size_t eid : g_.get_incident_edges(v)) {
             if (emitted_edge_[eid])
                 continue;
             if (emitted_vertex_[neighbor_of(eid, v)]) { // includes self-loops
@@ -94,7 +94,7 @@ public:
         }
         for (std::size_t eid : ready_) {
             ordering_.emplace_back(variable_type::edge, eid);
-            const edge& e = g_.edges[eid];
+            const edge& e = g_.edges()[eid];
             if (e.from != e.to) {
                 --remaining_[e.from];
                 --remaining_[e.to];
@@ -106,7 +106,7 @@ public:
 
 private:
     std::size_t neighbor_of(std::size_t eid, std::size_t v) const {
-        const edge& e = g_.edges[eid];
+        const edge& e = g_.edges()[eid];
         return (e.from == v) ? e.to : e.from;
     }
 
@@ -122,13 +122,13 @@ private:
 };
 
 std::size_t neighbor(const graph& g, std::size_t eid, std::size_t v) {
-    const edge& e = g.edges[eid];
+    const edge& e = g.edges()[eid];
     return (e.from == v) ? e.to : e.from;
 }
 
 std::vector<variable> bfs_ordering(const graph& g) {
     ordering_builder out(g, edge_order::by_id);
-    std::vector<char> queued(g.num_vertices, 0);
+    std::vector<char> queued(g.num_vertices(), 0);
     std::queue<std::size_t> q;
 
     auto run_from = [&](std::size_t seed) {
@@ -137,7 +137,7 @@ std::vector<variable> bfs_ordering(const graph& g) {
         while (!q.empty()) {
             const std::size_t v = q.front();
             q.pop();
-            for (std::size_t eid : g.adj[v]) {
+            for (std::size_t eid : g.get_incident_edges(v)) {
                 const std::size_t nb = neighbor(g, eid, v);
                 if (!queued[nb]) {
                     queued[nb] = 1;
@@ -150,8 +150,8 @@ std::vector<variable> bfs_ordering(const graph& g) {
 
     // Seed with ONE terminal (Wu & Sun 2024, Fig. 4 step 1). Seeding with all
     // terminals at once would interleave fronts and enlarge the boundary.
-    run_from(g.terminals.empty() ? 0 : g.terminals.front());
-    for (std::size_t v = 0; v < g.num_vertices; ++v) // other components
+    run_from(g.terminals().empty() ? 0 : g.terminals().front());
+    for (std::size_t v = 0; v < g.num_vertices(); ++v) // other components
         if (!queued[v])
             run_from(v);
     return out.take();
@@ -168,11 +168,11 @@ std::vector<variable> dfs_ordering(const graph& g) {
         stack.emplace_back(seed, 0);
         while (!stack.empty()) {
             auto& [v, next] = stack.back();
-            if (next == g.adj[v].size()) {
+            if (next == g.get_incident_edges(v).size()) {
                 stack.pop_back();
                 continue;
             }
-            const std::size_t nb = neighbor(g, g.adj[v][next++], v);
+            const std::size_t nb = neighbor(g, g.get_incident_edges(v)[next++], v);
             if (!out.emitted(nb)) {
                 out.emit_vertex(nb);
                 stack.emplace_back(nb, 0);
@@ -180,8 +180,8 @@ std::vector<variable> dfs_ordering(const graph& g) {
         }
     };
 
-    run_from(g.terminals.empty() ? 0 : g.terminals.front());
-    for (std::size_t v = 0; v < g.num_vertices; ++v) // other components
+    run_from(g.terminals().empty() ? 0 : g.terminals().front());
+    for (std::size_t v = 0; v < g.num_vertices(); ++v) // other components
         if (!out.emitted(v))
             run_from(v);
     return out.take();
@@ -208,11 +208,11 @@ std::size_t non_loop_neighbor(const graph& g, std::size_t eid, std::size_t v) {
 std::vector<std::size_t> greedy_cut_sequence(const graph& g, std::size_t seed,
                                              std::size_t first) {
     constexpr std::size_t none = std::numeric_limits<std::size_t>::max();
-    const std::size_t n = g.num_vertices;
+    const std::size_t n = g.num_vertices();
     std::vector<long long> deg(n, 0), processed_nb(n, 0), touched(n, -1);
     for (std::size_t v = 0; v < n; ++v)
-        for (std::size_t eid : g.adj[v])
-            if (g.edges[eid].from != g.edges[eid].to)
+        for (std::size_t eid : g.get_incident_edges(v))
+            if (g.edges()[eid].from != g.edges()[eid].to)
                 ++deg[v];
 
     // Min-heap on (cut growth, -touch time, id) with lazy invalidation.
@@ -234,7 +234,7 @@ std::vector<std::size_t> greedy_cut_sequence(const graph& g, std::size_t seed,
         done[v] = 1;
         sequence.push_back(v);
         ++clock;
-        for (std::size_t eid : g.adj[v]) {
+        for (std::size_t eid : g.get_incident_edges(v)) {
             const std::size_t o = non_loop_neighbor(g, eid, v);
             if (o == v || done[o])
                 continue;
@@ -282,17 +282,17 @@ struct cut_profile {
 };
 
 cut_profile profile_of(const graph& g, const std::vector<std::size_t>& sequence) {
-    std::vector<char> done(g.num_vertices, 0);
-    std::vector<std::size_t> open_edges(g.num_vertices, 0);
-    for (std::size_t v = 0; v < g.num_vertices; ++v)
-        for (std::size_t eid : g.adj[v])
-            if (g.edges[eid].from != g.edges[eid].to)
+    std::vector<char> done(g.num_vertices(), 0);
+    std::vector<std::size_t> open_edges(g.num_vertices(), 0);
+    for (std::size_t v = 0; v < g.num_vertices(); ++v)
+        for (std::size_t eid : g.get_incident_edges(v))
+            if (g.edges()[eid].from != g.edges()[eid].to)
                 ++open_edges[v];
     cut_profile p;
     std::size_t cut = 0, front = 0;
     for (std::size_t v : sequence) {
         done[v] = 1;
-        for (std::size_t eid : g.adj[v]) {
+        for (std::size_t eid : g.get_incident_edges(v)) {
             const std::size_t o = non_loop_neighbor(g, eid, v);
             if (o == v)
                 continue;
@@ -332,8 +332,8 @@ std::vector<std::size_t> vertices_of(const std::vector<variable>& ordering) {
 /// ones. The choice between candidates is insensitive to a in [1, 2].
 double perfect_vertex_work(const graph& g, const std::vector<variable>& ordering) {
     constexpr double a = 1.6;
-    std::vector<std::size_t> remaining(g.num_vertices, 0);
-    for (const edge& e : g.edges) {
+    std::vector<std::size_t> remaining(g.num_vertices(), 0);
+    for (const edge& e : g.edges()) {
         if (e.from != e.to) {
             ++remaining[e.from];
             ++remaining[e.to];
@@ -346,7 +346,7 @@ double perfect_vertex_work(const graph& g, const std::vector<variable>& ordering
         if (var.type == variable_type::vertex) {
             front += remaining[var.id] > 0;
         } else {
-            const edge& e = g.edges[var.id];
+            const edge& e = g.edges()[var.id];
             if (e.from != e.to) {
                 front -= --remaining[e.from] == 0;
                 front -= --remaining[e.to] == 0;
@@ -366,7 +366,7 @@ std::vector<variable> emit_departing_first(const graph& g, const std::vector<std
 std::vector<variable> cutwidth_ordering(const graph& g) {
     constexpr std::size_t none = std::numeric_limits<std::size_t>::max();
     constexpr std::size_t max_forced_starts = 16;
-    const std::size_t seed = g.terminals.empty() ? 0 : g.terminals.front();
+    const std::size_t seed = g.terminals().empty() ? 0 : g.terminals().front();
 
     // Candidates: BFS (so the result is never worse than BFS on this metric),
     // the free greedy, and the greedy forced through each neighbour of the
@@ -374,9 +374,9 @@ std::vector<variable> cutwidth_ordering(const graph& g) {
     std::vector<std::vector<std::size_t>> candidates;
     candidates.push_back(vertices_of(bfs_ordering(g)));
     candidates.push_back(greedy_cut_sequence(g, seed, none));
-    std::vector<char> tried(g.num_vertices, 0);
+    std::vector<char> tried(g.num_vertices(), 0);
     std::size_t forced = 0;
-    for (std::size_t eid : g.adj[seed]) {
+    for (std::size_t eid : g.get_incident_edges(seed)) {
         const std::size_t nb = neighbor(g, eid, seed);
         if (nb == seed || tried[nb] || forced == max_forced_starts)
             continue;
@@ -394,7 +394,7 @@ std::vector<variable> cutwidth_ordering(const graph& g) {
     // wide in the middle: 10x10, 2.9 M vs 8.4 M states in total), so the
     // estimated total work decides. The first candidate wins ties.
     const bool perfect_vertices =
-        std::all_of(g.vertex_probs.begin(), g.vertex_probs.end(), [](double p) { return p >= 1.0; });
+        std::all_of(g.vertex_probs().begin(), g.vertex_probs().end(), [](double p) { return p >= 1.0; });
     std::size_t best = 0;
     if (perfect_vertices) {
         double best_work = 0.0;
@@ -448,11 +448,11 @@ std::size_t estimate_max_boundary_size(const graph& g,
     detail::require_valid(g, "estimate_max_boundary_size");
     constexpr std::size_t absent = std::numeric_limits<std::size_t>::max();
 
-    std::vector<std::size_t> edge_pos(g.num_edges, absent);
+    std::vector<std::size_t> edge_pos(g.num_edges(), absent);
     for (std::size_t pos = 0; pos < ordering.size(); ++pos) {
         const variable& var = ordering[pos];
         const std::size_t limit =
-            var.type == variable_type::edge ? g.num_edges : g.num_vertices;
+            var.type == variable_type::edge ? g.num_edges() : g.num_vertices();
         if (var.id >= limit)
             throw std::invalid_argument(
                 "estimate_max_boundary_size: variable id " +
@@ -461,9 +461,9 @@ std::size_t estimate_max_boundary_size(const graph& g,
             edge_pos[var.id] = pos;
     }
 
-    std::vector<std::size_t> total(g.num_vertices, 0), done(g.num_vertices, 0);
-    for (std::size_t v = 0; v < g.num_vertices; ++v)
-        for (std::size_t eid : g.adj[v])
+    std::vector<std::size_t> total(g.num_vertices(), 0), done(g.num_vertices(), 0);
+    for (std::size_t v = 0; v < g.num_vertices(); ++v)
+        for (std::size_t eid : g.get_incident_edges(v))
             total[v] += (edge_pos[eid] != absent);
 
     auto on_boundary = [&](std::size_t v) { return done[v] > 0 && done[v] < total[v]; };
@@ -472,7 +472,7 @@ std::size_t estimate_max_boundary_size(const graph& g,
     for (std::size_t level = 0; level < ordering.size(); ++level) {
         const variable& var = ordering[level];
         if (var.type == variable_type::edge && edge_pos[var.id] == level) {
-            const edge& e = g.edges[var.id];
+            const edge& e = g.edges()[var.id];
             auto process_endpoint = [&](std::size_t v) {
                 const bool before = on_boundary(v);
                 ++done[v];

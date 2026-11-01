@@ -39,19 +39,19 @@ using namespace teddy::graphrel;
 
 /// Exact K-terminal reliability by enumerating all 2^(V+E) states.
 double brute_force(const graph& g) {
-    const std::size_t V = g.num_vertices, E = g.edges.size();
+    const std::size_t V = g.num_vertices(), E = g.edges().size();
     double total = 0.0;
     std::vector<std::size_t> parent(V);
     for (std::uint64_t m = 0; m < (std::uint64_t{1} << (V + E)); ++m) {
         double p = 1.0;
         for (std::size_t i = 0; i < V; ++i)
-            p *= (m >> i & 1) ? g.vertex_probs[i] : 1.0 - g.vertex_probs[i];
+            p *= (m >> i & 1) ? g.vertex_probs()[i] : 1.0 - g.vertex_probs()[i];
         for (std::size_t j = 0; j < E; ++j)
-            p *= (m >> (V + j) & 1) ? g.edges[j].prob : 1.0 - g.edges[j].prob;
+            p *= (m >> (V + j) & 1) ? g.edges()[j].prob : 1.0 - g.edges()[j].prob;
         if (p == 0.0)
             continue;
         bool ok = true;
-        for (std::size_t t : g.terminals)
+        for (std::size_t t : g.terminals())
             ok = ok && (m >> t & 1);
         if (!ok)
             continue;
@@ -61,12 +61,12 @@ double brute_force(const graph& g) {
             return x;
         };
         for (std::size_t j = 0; j < E; ++j) {
-            const edge& e = g.edges[j];
+            const edge& e = g.edges()[j];
             if ((m >> (V + j) & 1) && (m >> e.from & 1) && (m >> e.to & 1))
                 parent[find(e.from)] = find(e.to);
         }
-        const std::size_t root = find(g.terminals.front());
-        for (std::size_t t : g.terminals)
+        const std::size_t root = find(g.terminals().front());
+        for (std::size_t t : g.terminals())
             ok = ok && find(t) == root;
         if (ok)
             total += p;
@@ -122,8 +122,8 @@ graph random_graph(std::mt19937_64& rng, fuzz_mode mode) {
     for (auto [a, b] : ends)
         g.add_edge(a, b, perfect_edges && rng() % 2 ? 1.0 : rand_p());
     if (paper || rng() % 2)
-        for (double& p : g.vertex_probs)
-            p = paper ? rand_p() : (rng() % 3 ? pick() : 1.0);
+        for (std::size_t v = 0; v < V; ++v)
+            g.set_vertex_prob(v, paper ? rand_p() : (rng() % 3 ? pick() : 1.0));
 
     const std::size_t min_k = mode == fuzz_mode::any ? 1 : 2;
     const std::size_t k = min_k + rng() % std::min<std::size_t>(V - min_k + 1, 3);
@@ -136,20 +136,20 @@ graph random_graph(std::mt19937_64& rng, fuzz_mode mode) {
 
 /// Random ordering that respects vertex priority but is otherwise arbitrary.
 std::vector<variable> random_vertex_priority_ordering(const graph& g, std::mt19937_64& rng) {
-    std::vector<std::size_t> verts(g.num_vertices);
+    std::vector<std::size_t> verts(g.num_vertices());
     std::iota(verts.begin(), verts.end(), std::size_t{0});
     std::shuffle(verts.begin(), verts.end(), rng);
-    std::vector<char> placed(g.num_vertices, 0), done(g.edges.size(), 0);
+    std::vector<char> placed(g.num_vertices(), 0), done(g.edges().size(), 0);
     std::vector<std::size_t> ready;
     std::vector<variable> ord;
     std::size_t next = 0;
-    while (ord.size() < g.num_vertices + g.edges.size()) {
+    while (ord.size() < g.num_vertices() + g.edges().size()) {
         if (next < verts.size() && (ready.empty() || rng() % 2)) {
             const std::size_t v = verts[next++];
             placed[v] = 1;
             ord.emplace_back(variable_type::vertex, v);
-            for (std::size_t e = 0; e < g.edges.size(); ++e)
-                if (!done[e] && placed[g.edges[e].from] && placed[g.edges[e].to]) {
+            for (std::size_t e = 0; e < g.edges().size(); ++e)
+                if (!done[e] && placed[g.edges()[e].from] && placed[g.edges()[e].to]) {
                     done[e] = 1;
                     ready.push_back(e);
                 }
@@ -169,7 +169,7 @@ graph mesh(std::size_t rows, std::size_t cols, double p) {
             if (j + 1 < cols) g.add_edge(i * cols + j, i * cols + j + 1, p);
             if (i + 1 < rows) g.add_edge(i * cols + j, (i + 1) * cols + j, p);
         }
-    for (double& v : g.vertex_probs) v = p;
+    g.set_all_vertex_probs(p);
     g.set_terminals({0, rows * cols - 1});
     return g;
 }
@@ -179,7 +179,7 @@ graph complete(std::size_t n, double p) {
     for (std::size_t a = 0; a < n; ++a)
         for (std::size_t b = a + 1; b < n; ++b)
             g.add_edge(a, b, p);
-    for (double& v : g.vertex_probs) v = p;
+    g.set_all_vertex_probs(p);
     g.set_terminals({0, n - 1});
     return g;
 }
@@ -304,7 +304,7 @@ BOOST_AUTO_TEST_SUITE(graphrel_preconditions_test)
 BOOST_AUTO_TEST_CASE(perfect_edges_through_failed_vertex) {
     // Audit 1.1: BDD contracted p=1 edges incident to a failed vertex.
     graph g(3, 3);
-    g.vertex_probs[1] = 0.5;
+    g.set_vertex_prob(1, 0.5);
     g.add_edge(0, 1, 1.0);
     g.add_edge(1, 2, 1.0);
     g.add_edge(0, 2, 0.5);
@@ -316,7 +316,7 @@ BOOST_AUTO_TEST_CASE(perfect_edges_through_failed_vertex) {
 BOOST_AUTO_TEST_CASE(single_terminal_is_its_own_reliability) {
     // Audit 1.2: |K| = 1 gives R = p(terminal) on both paths.
     graph g(2, 1);
-    g.vertex_probs[0] = 0.3;
+    g.set_vertex_prob(0, 0.3);
     g.add_edge(0, 1, 0.5);
     g.set_terminals({0});
     BOOST_TEST(calculate_reliability(g) == 0.3, boost::test_tools::tolerance(1e-12));
@@ -327,19 +327,18 @@ BOOST_AUTO_TEST_CASE(single_terminal_is_its_own_reliability) {
     BOOST_TEST(calculate_reliability(g, ord) == 0.3, boost::test_tools::tolerance(1e-12));
 }
 
-BOOST_AUTO_TEST_CASE(unsorted_terminals_rejected) {
-    // Audit 1.3: unsorted terminals used to give 0.855 instead of 0.405.
+BOOST_AUTO_TEST_CASE(terminals_are_normalised) {
+    // Audit 1.3: unsorted terminals used to give 0.855 instead of 0.405. The
+    // terminal set can no longer be stored unsorted: set_terminals() sorts
+    // and de-duplicates it.
     graph g(3, 2);
-    g.vertex_probs[0] = 0.5;
+    g.set_vertex_prob(0, 0.5);
     g.add_edge(0, 1, 0.9);
     g.add_edge(1, 2, 0.9);
-    g.terminals = {2, 0};
-    BOOST_TEST(!g.validate());
-    BOOST_CHECK_THROW(calculate_reliability(g), std::invalid_argument);
-    BOOST_CHECK_THROW(build_diagram(g), std::invalid_argument);
-
     g.set_terminals({2, 0, 2});
-    BOOST_TEST((g.terminals == std::vector<std::size_t>{0, 2}));
+    BOOST_TEST((g.terminals() == std::vector<std::size_t>{0, 2}));
+    BOOST_TEST(g.is_terminal(2));
+    BOOST_TEST(!g.is_terminal(1));
     BOOST_TEST(calculate_reliability(g) == 0.405, boost::test_tools::tolerance(1e-12));
     BOOST_TEST(bdd_reliability(g) == 0.405, boost::test_tools::tolerance(1e-12));
 }
@@ -354,27 +353,49 @@ BOOST_AUTO_TEST_CASE(empty_terminals_rejected) {
     BOOST_CHECK_THROW(g.set_terminals({5}), std::out_of_range);
 }
 
-BOOST_AUTO_TEST_CASE(nan_probabilities_rejected) {
+// Invalid probabilities and indices are rejected when they are set, so a
+// graph cannot hold them (audit A3: they used to be caught, if at all, only
+// when the algorithms validated the graph).
+BOOST_AUTO_TEST_CASE(invalid_values_rejected_on_entry) {
     graph g(2, 1);
     BOOST_CHECK_THROW(g.add_edge(0, 1, std::nan("")), std::invalid_argument);
+    BOOST_CHECK_THROW(g.add_edge(0, 1, 1.5), std::invalid_argument);
+    BOOST_CHECK_THROW(g.add_edge(0, 2, 0.5), std::out_of_range);
     g.add_edge(0, 1, 0.5);
-    g.vertex_probs[0] = std::nan("");
+    BOOST_CHECK_THROW(g.set_vertex_prob(0, std::nan("")), std::invalid_argument);
+    BOOST_CHECK_THROW(g.set_vertex_prob(0, -0.1), std::invalid_argument);
+    BOOST_CHECK_THROW(g.set_vertex_prob(2, 0.5), std::out_of_range);
+    BOOST_CHECK_THROW(g.set_all_vertex_probs(2.0), std::invalid_argument);
+    BOOST_CHECK_THROW(g.set_edge_prob(0, std::nan("")), std::invalid_argument);
+    BOOST_CHECK_THROW(g.set_edge_prob(1, 0.5), std::out_of_range);
+    BOOST_CHECK_THROW(g.get_incident_edges(2), std::out_of_range);
+    BOOST_CHECK_THROW(graph(graph::max_vertices + 1), std::length_error);
+    // Nothing above changed the graph.
+    BOOST_TEST(g.num_edges() == 1u);
+    BOOST_TEST(g.vertex_probs()[0] == 1.0);
+    BOOST_TEST(g.edges()[0].prob == 0.5);
+
+    g.set_edge_prob(0, 0.25);
+    g.set_all_vertex_probs(0.5);
     g.set_terminals({0, 1});
-    BOOST_TEST(!g.validate());
+    BOOST_TEST(g.validate());
+    BOOST_TEST(calculate_reliability(g) == 0.0625, boost::test_tools::tolerance(1e-12));
 }
 
-BOOST_AUTO_TEST_CASE(edge_count_mismatch_rejected) {
-    graph g(3, 0);   // declares zero edges ...
-    g.add_edge(0, 1, 0.9);  // ... but adds one
-    g.set_terminals({0, 1});
-    BOOST_TEST(!g.validate());
-    BOOST_CHECK_THROW(calculate_reliability(g), std::invalid_argument);
+// graph(n, m): m only reserves space; any number of edges may be added.
+BOOST_AUTO_TEST_CASE(expected_edge_count_is_a_hint) {
+    graph g(3, 0);
+    g.add_edge(0, 1, 0.9);
+    g.add_edge(1, 2, 0.9);
+    g.set_terminals({0, 2});
+    BOOST_TEST(g.num_edges() == 2u);
+    BOOST_TEST(calculate_reliability(g) == 0.81, boost::test_tools::tolerance(1e-12));
 }
 
 BOOST_AUTO_TEST_CASE(invalid_orderings_rejected) {
     // Audit 1.4: these used to return 0.81 and 0.0 instead of 0.405.
     graph g(3, 2);
-    g.vertex_probs[1] = 0.5;
+    g.set_vertex_prob(1, 0.5);
     g.add_edge(0, 1, 0.9);
     g.add_edge(1, 2, 0.9);
     g.set_terminals({0, 2});
@@ -401,7 +422,7 @@ BOOST_AUTO_TEST_CASE(small_unreliability_is_exact) {
     // Audit 1.5: the 1e-15 cutoff gave a 1.2e-6 relative error in 1-R here.
     const graph g = [] {
         graph m = mesh(5, 5, 0.9999);
-        std::fill(m.vertex_probs.begin(), m.vertex_probs.end(), 1.0);
+        m.set_all_vertex_probs(1.0);
         return m;
     }();
     const double u_lbl = 1.0 - calculate_reliability(g);
@@ -429,12 +450,12 @@ BOOST_AUTO_TEST_CASE(valid_file_parses) {
                     "e 0 1\n"
                     "e 1 2 0.5\n"
                     "v 1 0.7\n");
-    BOOST_TEST(g.num_vertices == 3u);
-    BOOST_TEST(g.edges[0].prob == 0.9);
-    BOOST_TEST(g.edges[1].prob == 0.5);
-    BOOST_TEST(g.vertex_probs[0] == 0.8);
-    BOOST_TEST(g.vertex_probs[1] == 0.7);
-    BOOST_TEST((g.terminals == std::vector<std::size_t>{0, 2}));
+    BOOST_TEST(g.num_vertices() == 3u);
+    BOOST_TEST(g.edges()[0].prob == 0.9);
+    BOOST_TEST(g.edges()[1].prob == 0.5);
+    BOOST_TEST(g.vertex_probs()[0] == 0.8);
+    BOOST_TEST(g.vertex_probs()[1] == 0.7);
+    BOOST_TEST((g.terminals() == std::vector<std::size_t>{0, 2}));
 }
 
 BOOST_AUTO_TEST_CASE(malformed_input_rejected) {
@@ -458,14 +479,14 @@ BOOST_AUTO_TEST_CASE(round_trip_is_exact) {
     graph g(3, 2);
     g.add_edge(0, 1, 0.1 + 0.2);       // 0.30000000000000004
     g.add_edge(1, 2, 1.0 / 3.0);
-    g.vertex_probs[1] = 2.0 / 3.0;
+    g.set_vertex_prob(1, 2.0 / 3.0);
     g.set_terminals({0, 2});
     std::stringstream ss;
     write_graph(ss, g);
     const graph h = read_graph(ss);
-    BOOST_TEST(h.edges[0].prob == g.edges[0].prob);
-    BOOST_TEST(h.edges[1].prob == g.edges[1].prob);
-    BOOST_TEST(h.vertex_probs[1] == g.vertex_probs[1]);
+    BOOST_TEST(h.edges()[0].prob == g.edges()[0].prob);
+    BOOST_TEST(h.edges()[1].prob == g.edges()[1].prob);
+    BOOST_TEST(h.vertex_probs()[1] == g.vertex_probs()[1]);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -498,12 +519,12 @@ BOOST_AUTO_TEST_CASE(wu_sun_table2_meshes) {
 BOOST_AUTO_TEST_CASE(wu_sun_table2_layer_sizes) {
     auto row_major = [](const graph& g) {
         std::vector<variable> ord;
-        std::vector<char> placed(g.num_vertices, 0), done(g.num_edges, 0);
-        for (std::size_t v = 0; v < g.num_vertices; ++v) {
+        std::vector<char> placed(g.num_vertices(), 0), done(g.num_edges(), 0);
+        for (std::size_t v = 0; v < g.num_vertices(); ++v) {
             ord.emplace_back(variable_type::vertex, v);
             placed[v] = 1;
-            for (std::size_t e : g.adj[v]) {
-                const std::size_t o = g.edges[e].from == v ? g.edges[e].to : g.edges[e].from;
+            for (std::size_t e : g.get_incident_edges(v)) {
+                const std::size_t o = g.edges()[e].from == v ? g.edges()[e].to : g.edges()[e].from;
                 if (!done[e] && placed[o]) {
                     done[e] = 1;
                     ord.emplace_back(variable_type::edge, e);
@@ -581,7 +602,7 @@ BOOST_AUTO_TEST_CASE(cutwidth_ordering_reduces_layer_size) {
 // total instead of 86,888).
 BOOST_AUTO_TEST_CASE(cutwidth_ordering_perfect_vertices_minimises_work) {
     graph g = mesh(7, 7, 0.9);
-    std::fill(g.vertex_probs.begin(), g.vertex_probs.end(), 1.0);
+    g.set_all_vertex_probs(1.0);
     lbl_calculator by_bfs(g, generate_variable_ordering(g, ordering_strategy::bfs));
     lbl_calculator by_default(g);
     BOOST_TEST(by_bfs.calculate() == by_default.calculate(), boost::test_tools::tolerance(1e-12));

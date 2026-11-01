@@ -202,8 +202,8 @@ double lbl_calculator::calculate() {
     dropped_probability_ = 0.0;
 
     // |K| = 1: the terminal set is connected iff that vertex works.
-    if (net_.terminals.size() == 1) {
-        return net_.vertex_probs[net_.terminals.front()];
+    if (net_.terminals().size() == 1) {
+        return net_.vertex_probs()[net_.terminals().front()];
     }
 
     const detail::frontier_plan plan(net_, ordering_, /*force_perfect_vertices=*/true);
@@ -236,8 +236,8 @@ double lbl_calculator::calculate() {
         const std::size_t child_key_size = next.key_size();
 
         const variable& var = ordering_[level];
-        const double p = var.type == variable_type::edge ? net_.edges[var.id].prob
-                                                         : net_.vertex_probs[var.id];
+        const double p = var.type == variable_type::edge ? net_.edges()[var.id].prob
+                                                         : net_.vertex_probs()[var.id];
 
         // Expand the parents of block b; live children go to
         // emit(key, hash, probability, position). A branch with probability
