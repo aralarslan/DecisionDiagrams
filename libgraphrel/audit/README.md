@@ -14,22 +14,23 @@ technical report on the work (method, decisions, results, lessons, commit map) i
 | Existing graphrel tests did not compile (`decomp_state::union_find` → `uf_`) | Fixed (`1ef297d`) |
 | 1.1 BDD perfect edges through a failed vertex | Fixed (`a29ca5e`) |
 | 1.2 \|K\| = 1 | Defined as R = p(terminal) on both paths; \|K\| = 0 rejected (`a29ca5e`) |
-| 1.3 Unsorted terminals | Rejected by `validate()`; new `graph::set_terminals()` normalises (`a29ca5e`) |
+| 1.3 Unsorted terminals | Impossible by construction: `graph` is a class and `set_terminals()` sorts and de-duplicates (`a29ca5e`, `0d0f22e`) |
 | 1.4 Custom orderings | Must be a permutation that respects vertex priority (`a29ca5e`) |
 | 1.5 1e-15 cutoff | LBL exact again; opt-in `calculate_reliability_bounds()` keeps the speed with a rigorous interval (`a29ca5e`) |
 | 1.6 Overflow beyond F = 25, hash-only identity | Fixed by the frontier engine: exact byte-compared keys, no Bell-number limit, fronts up to 64 (`6c37164`) |
 | 1.7 Parser / writer | Strict token parsing; exact round-trip (`a29ca5e`) |
-| 1.8 Validation order, `lbl_calculator` lifetime, `state_pool` exception safety | Fixed (`a29ca5e`, `63bf4fb`). Note: `lbl_calculator` was movable, not copyable; see HANDOFF §3.17 |
+| 1.8 Validation order, `lbl_calculator` lifetime, `state_pool` exception safety | Fixed (`a29ca5e`, `63bf4fb`). Note: `lbl_calculator` was movable, not copyable; see HANDOFF Appendix D |
 | 1.9 Docs / attribution | Fixed (`195280d`) |
 | 2.1 `bell_cache` O((V+E)²) | Fixed (`0a43644`) |
 | 2.2 Boundary precompute O(L·V) | Fixed (`0a43644`) |
 | 2.3 Per-state Θ(V+E) work | Redundant rebuilds removed (`0a43644`); frontier-local states, O(F) per state (`6c37164`) |
 | 2.4 Ordering helpers | O(V+E), identical output (`0a43644`) |
-| Ordering quality (gap to Wu & Sun Table 2) | New `ordering_strategy::cutwidth`, default for LBL and BDD: N20 387,481 → 65,858 states (`7a98b40`); see HANDOFF §3.16 |
+| Ordering quality (gap to Wu & Sun Table 2) | New `ordering_strategy::cutwidth`, default for LBL and BDD: N20 387,481 → 65,858 states (`7a98b40`); departing-first edge order (`dea84ec`); work-based choice with perfect vertices (`9361a6a`). The remaining gap was a counting convention: every B¹ of Table 2 is now reproduced exactly (`9be6bbe`). See HANDOFF §5.4, §5.6, §5.7, §5.9 |
 | 2.5 `state_pool` | Fixed: recycled states reuse their allocations (`63bf4fb`) |
 | 2.6 Allocation churn, 2.7 BDD recursion depth | Fixed: frontier engine with flat state tables; BDD built layer by layer without recursion (`6c37164`, `7916203`) |
-| §3 Dead code, duplication, docs, warnings | Fixed (`195280d`); `graph` encapsulation (3.1): open |
-| §4 Tests and CI | Brute-force fuzz, precondition, I/O and paper tests; CI runs them on GCC and Clang, plus an ASan/UBSan job (`a29ca5e`, `9771441`) |
+| §3 Dead code, duplication, docs, warnings | Fixed (`195280d`); `graph` encapsulation (3.1): done, an API change (`0d0f22e`, HANDOFF §5.10) |
+| §4 Tests and CI | Brute-force fuzz, precondition, I/O and paper tests; CI runs them on GCC and Clang, plus an ASan/UBSan job (`a29ca5e`, `9771441`); parallel determinism tests, checked under ThreadSanitizer (`42c0e7d`). The workflow has not yet run on GitHub |
+| Beyond the audit | Parallel layer expansion with bit-identical results (`42c0e7d`, HANDOFF §5.8) |
 
 ## Which reference applies to which code
 

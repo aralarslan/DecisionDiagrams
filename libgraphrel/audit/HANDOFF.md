@@ -71,7 +71,13 @@ structural width for polynomial cost in graph size.
    boundary size, predicts the state count.
 5. A frontier-local engine shared by LBL and BDD. It has exact state keys, O(F) work per state,
    and no Bell-number ceiling.
-6. A traceable record of every decision, including the mistakes and how they were corrected.
+6. Exact reproduction of every layer size Wu & Sun publish, after identifying what their B¹
+   counts. The state definitions are the same; the earlier "gaps" were a counting convention.
+7. A rule for the order of each vertex's edges, and an ordering score for perfect vertices
+   that accounts for how long a layer stays wide, each validated on graphs not used to design it.
+8. Parallel layer expansion whose results are bit-identical for every thread count.
+9. A `graph` class whose invariants make the invalid inputs of the audit unrepresentable.
+10. A traceable record of every decision, including the mistakes and how they were corrected.
 
 ---
 
@@ -182,8 +188,11 @@ geometric graphs and complete graphs, with callgrind profiles on a 7×7 mesh.
 
 We reproduced Wu & Sun Table 2: the bridge (Fig. 1–3), N6–N9 (identified as meshes from |V| and
 |E|), N20–N26 and N27–N28. All edges and vertices have probability 0.9, and the two terminals are
-the most distant pair (opposite corners). Shared code was checked against Carlier & Lucet's
-Algorithms 1–2 over all 142,417 partitions with |F| ≤ 10.
+the most distant pair (opposite corners). Layer sizes are compared with the paper's B¹ in the
+paper's own convention, which counts only the states that a layer's variable splits (§5.7).
+The previous engine's partition numbering was checked against Carlier & Lucet's Algorithms 1–2
+over all 142,417 partitions with |F| ≤ 10; the frontier engine stores block labels directly, so
+that check no longer applies.
 
 ### 3.4 Behaviour-preservation protocol
 
@@ -200,7 +209,10 @@ Any change meant to affect only cost had to reproduce these exactly, on fixed be
 - Each long run is a separate process with time and memory limits, so a blow-up is recorded
   rather than crashing the experiment.
 - Peak resident memory comes from `getrusage`.
-- Sanitizer builds (ASan + UBSan, halt on error) are run for every change.
+- Sanitizer builds (ASan + UBSan, halt on error) are run for every change, and ThreadSanitizer
+  for the parallel code.
+- Machine: a 4-core cloud VM. Repeated timings vary by about ±10 %; layer sizes and results are
+  deterministic.
 
 ---
 
@@ -221,9 +233,15 @@ Any change meant to affect only cost had to reproduce these exactly, on fixed be
 | A11 | State identity by 64-bit hash; partition numbers overflow beyond \|F\| = 25 | review | hash-only keys; B(26) > 2⁶⁴ | soundness risk |
 | A12 | More states per layer than Wu & Sun on meshes | N20: 387,481 vs 53,924 | ordering (§5.4) | performance |
 | A13 | Dead code, duplicated operations, wrong attribution, 15 warnings | review | — | quality |
+| A14 | Layer sizes compared with the paper in a different convention | N20 65,858 vs B¹ 53,924; K₁₂ 1.8× | we counted every state of a layer, the paper only the states that still contain the layer's variable | measurement |
+| A15 | Edges of a vertex emitted in edge-id order | 5×5: 146 or 180 states depending on that order; geo40_4: 418,948 vs 219,252 | order left open by the references | performance |
+| A16 | Ordering score blind to how long a layer stays wide | perfect-vertex 9×9: 2.6× the work of BFS at the same peak | edge cut is a poor proxy with perfect vertices | performance |
+| A17 | `graph` could hold invalid states (README §3.1) | unsorted terminals (A4), NaN probabilities, inconsistent adjacency | public data members | design |
+| A18 | `sweep.cpp` stopped compiling with the old engine's removal; `probe.cpp` aborted | build | harnesses are outside the build | infrastructure |
 
 Within the references' assumptions (`PAPER`), both methods were already correct (0/10,000). Every
-correctness failure needed either an input outside those assumptions or a p = 1 edge.
+correctness failure needed either an input outside those assumptions or a p = 1 edge. A14–A18
+were found during the second phase of the work (§5.6–§5.10).
 
 ---
 
@@ -377,6 +395,199 @@ every case checked (§6.2).
 only the frontier engine can do: a front of 31 vertices (R = 1 − 0.5³⁰ exactly) and rejection of
 fronts above 64.
 
+### 5.6 Edge order within each vertex (`dea84ec`)
+
+**Observation.** Vertex priority fixes when an edge becomes ready, not the order of the edges
+that become ready together, after one vertex. That order changes the layer sizes but not the
+result. On the 5×5 mesh, edge-id order gives 146 states at the widest layer and the reverse
+gives 180; on K₁₀ the reverse is better (35,016 vs 42,107).
+
+**Hypothesis.** An edge whose other endpoint has no other unprocessed edge makes that endpoint
+leave the front as soon as it is processed. Its block is then closed or pruned (Lemma 2) before
+the next branching, so fewer distinct states are created.
+
+**Rule.** Sort the ready edges by the other endpoint: fewest unemitted edges first, then the most
+recently emitted endpoint first.
+
+**Evaluation** (`edge_order_lab.cpp`). The main set had 36 cases: 5 meshes, 12 random geometric
+graphs and K₁₁, each with perfect and with imperfect vertices. A first pass also covered 7
+smaller meshes and K₈–K₁₀. Five orders were compared: edge id, reversed, most recent endpoint
+first, and the departing-first rule with either tie-break.
+
+| Case | Edge-id order: widest layer / total states | Departing-first, newest first |
+|---|---|---|
+| geo40_4, vertices 0.9 | 418,948 / 7.12 M | 219,252 / 5.67 M |
+| geo40_5, vertices 0.9 | 100,369 / 1.02 M | 50,723 / 0.74 M |
+| geo40_8, perfect vertices | 1,306 / 24,452 | 622 / 16,710 |
+| K₁₁, vertices 0.9 | 239,481 / 2.88 M | 201,959 / 2.53 M |
+| 10×10 mesh, vertices 0.9 | 65,858 / 12,089,259 | 65,858 / 12,091,807 |
+
+**Decision.** Departing-first, newest first. It never enlarged the widest layer, and total work
+grew by at most 0.07 % (meshes) while falling by up to 1.5× elsewhere. The oldest-first
+tie-break is marginally better on some rectangles (6×10: 684 vs 711) but gains nothing on
+complete graphs. The rule applies to the cut-width ordering only. BFS and DFS keep edge-id
+order, which is the order that reproduces the paper's counts (§5.7).
+
+### 5.7 What the paper's layer size counts (`9be6bbe`)
+
+**Observation.** On the 2×20 ladder (N9) the paper reports B¹ = 4. Every ordering we tried
+peaks at 5 states, and a dump of that layer shows five states with five different futures. No
+exact method can merge them, so the difference had to be in what is counted.
+
+**Explanation.** In Wu & Sun, "when the vertex variable fails, the edges connected to it are
+removed from the network" (§2.3). A subgraph whose current variable no longer exists is
+therefore not decomposed at that layer. The same holds when the variable cannot change the
+subgraph's future. We counted every state of a layer. The paper's G^max counts only the states
+that the layer's variable splits into two children. The library now reports both:
+`max_layer_size` and `max_branching_layer_size`.
+
+**Result.** With the paper's ordering (vertices row by row, each vertex's edges by id) every
+published B¹ is reproduced exactly.
+
+| Net | Graph | Paper B¹ | Branching states, ours |
+|---|---|---|---|
+| N9 | 2×20 | 4 | 4 |
+| N6 | 3×10 | 12 | 12 |
+| N7 | 3×12 | 12 | 12 |
+| N8 | 5×5 | 118 | 118 |
+| N20 | 10×10 | 53,924 | 53,924 |
+| N21 | 11×11 | 191,216 | 191,216 |
+| N22 | 12×12 | 684,114 | 684,114 |
+| N27 | K₁₂ | 816,465 | 816,465 |
+| N28 | K₁₃ | 5,460,095 | 5,460,095 |
+
+Two details had to be identified:
+- **Mesh ordering.** The counts match a row-by-row sweep. A breadth-first search from a corner
+  sweeps anti-diagonals (10×10: 316,303 branching states). The library's cut-width ordering
+  produces the row sweep, so its counts equal B¹ on N20–N22 as well.
+- **Terminals of the complete graphs.** Every pair of vertices of K_n is at "maximum distance",
+  so the instance is defined only up to relabelling, and R does not depend on the choice. The
+  layer sizes do. With the two terminals first in the order, K₁₂ gives 816,465 (the paper); with
+  terminals {0, 11}, our test instance, it gives 970,727.
+
+**Consequence.** The state definitions are identical. The "1.22×" (meshes) and "1.7–1.8×"
+(complete graphs) gaps recorded earlier were this counting convention plus, for complete
+graphs, the terminal placement. Our time advantage at equal state counts comes from the
+implementation (§5.5, §5.8).
+
+### 5.8 Parallel layer expansion (`42c0e7d`)
+
+**Requirement.** Results must be **bit-identical for every thread count**. Floating-point sums
+depend on their order, so a naive parallel merge would make the last digits of R depend on the
+machine and on scheduling.
+
+**Design.**
+- *Production order.* Parent g of a layer yields children at positions 2g (fails) and 2g + 1
+  (works).
+- *Serial layers* are one table whose entries appear in production order.
+- *Parallel layers* (at least 16,384 states) are split into 64 shards by the top bits of the key
+  hash. In each round, every thread expands a contiguous run of parents into per-shard buffers.
+  Each shard then takes its children run by run, so every key accumulates its probability in
+  production order. The position that created each new state is marked in a bitmap, and the
+  layer's order is rebuilt from the bitmap ranks. Every state therefore has the same position as
+  in a serial run.
+- *Sums of resolved branches* (success, pruned probability) are accumulated in fixed blocks of
+  4,096 parents and then added in block order.
+- *Threads* are created on the first large layer, so small inputs never start one. The API takes
+  a `threads` argument: 1 by default, 0 for all hardware threads.
+
+**Alternatives rejected.**
+- A concurrent table with locks: the summation order would vary.
+- Per-thread private tables merged at the end: the merge is serial and becomes the bottleneck.
+- Iterating the shards one after another instead of rebuilding the order: measured 1.5× slower
+  even serially. Consecutive parents in creation order tend to produce the same children, so
+  their merges hit entries that are still in cache. Hash order destroys that locality.
+
+**State table layout.** Each entry is one record [hash | probability | key], so a lookup touches
+one slot and one record instead of three arrays.
+
+**Verification.**
+- Fuzzing through the threaded path with a one-state grain: 600 graphs × 1–4 threads, with and
+  without pruning. Results are bit-identical and match brute force.
+- Larger layers with several grains.
+- ThreadSanitizer, ASan and UBSan are clean.
+
+**Results.** See §6.3 and §6.4. On 4 cores the speed-up is 2–3× (10×10: 4.4 s serial, 2.0–2.4 s
+with 4 threads; K₁₂: 8.8 s and 2.9 s). It is limited by the merge phase and by layers too small
+to split.
+
+### 5.9 Ordering score with perfect vertices (`9361a6a`)
+
+**Observation.** With perfect vertices the cut-width ordering lost to BFS on square meshes: the
+same widest layer, but 1.3× (5×5) to 2.6× (9×9) more total work. A row sweep stays wide for the
+whole sweep, while BFS's diagonal sweep is wide only in the middle.
+
+**Measurement** (`level_lab.cpp`, `fit_levels.py`). We recorded the front size F, edge cut C
+and layer size at every level: 14,532 levels from 22 graphs (meshes, random geometric graphs and
+complete graphs), under BFS, DFS and cut-width orderings, in both regimes. A regression pooled
+over all graphs mostly measures differences *between* graphs, which is not the decision being
+made. With a per-graph offset (fixed effects), which keeps only differences between orderings of
+the same graph:
+
+| Regime | Fitted model |
+|---|---|
+| Imperfect vertices (0.9) | log₂ states = 1.51 F + 0.10 C + c(graph) |
+| Perfect vertices | log₂ states = 1.61 F − 0.015 C + c(graph) |
+
+With perfect vertices a front vertex is absent only once it is pruned, so the state count
+follows the partitions of the front, and the cut adds nothing. With imperfect vertices the cut
+picks the best candidate in every case measured.
+
+**Rule.** If every vertex is perfect, rank the candidates by estimated work Σ over levels of
+2^(1.6·F). Otherwise keep (largest cut, largest front, total cut).
+
+**Evaluation.**
+- *In sample* (35 graph/regime pairs, BFS vs cut-width): the worst loss against the better of
+  the two fell from 2.57× to 1.20×, and the mean loss from 9.4 % to 0.7 %. Exponents from 1 to 2
+  give the same choices.
+- *Out of sample* (23 graphs not used to design the rule, all vertices perfect): none got worse,
+  and six improved. 10×10: 2.9× less work. 11×11: 3.2×. 9×6: 1.26×. geo40_9: 2.6× (widest
+  layer 1.6 M → 266 k). geo80_2: 6.6× (1.22 M → 417 k). With imperfect vertices the chosen
+  orderings are identical, as intended.
+
+### 5.10 `graph` as a class (`0d0f22e`)
+
+**Problem.** `graph` exposed its vectors, so it could hold states the algorithms cannot handle:
+- unsorted terminals (A4);
+- NaN probabilities;
+- adjacency lists that disagree with the edge list;
+- `num_edges` promising more `add_edge` calls than were made.
+
+Every entry point had to re-validate the graph, and any check it missed became a wrong answer.
+
+**Design.**
+- All members are private.
+- Mutators are checked and throw before changing anything: `add_edge`, `set_vertex_prob`,
+  `set_all_vertex_probs`, `set_edge_prob`, `set_terminals`.
+- Accessors are read-only: `num_vertices()`, `edges()`, `vertex_probs()`, `terminals()`,
+  `get_incident_edges(v)`.
+- In `graph(n, m)`, `m` now only reserves space.
+
+The one precondition left is a non-empty terminal set.
+
+**Alternatives.**
+- Keeping the struct and `validate()`: errors surface late, at use, and every new entry point
+  must remember to validate.
+- A builder producing an immutable graph: cleaner, but a larger API change, and incremental
+  edits would need copies.
+
+**Migration.**
+
+| Before | After |
+|---|---|
+| `g.num_vertices`, `g.num_edges` | `g.num_vertices()`, `g.num_edges()` |
+| `g.edges`, `g.vertex_probs`, `g.terminals` | `g.edges()`, `g.vertex_probs()`, `g.terminals()` (read-only) |
+| `g.adj[v]` | `g.get_incident_edges(v)` |
+| `g.vertex_probs[v] = p` | `g.set_vertex_prob(v, p)` |
+| `for (auto& p : g.vertex_probs) p = x;` | `g.set_all_vertex_probs(x)` |
+| `g.edges[e].prob = p` | `g.set_edge_prob(e, p)` |
+| `g.terminals = {...}` | `g.set_terminals({...})` |
+
+The library, tests, audit harnesses, the example and the scaling experiment were migrated.
+Tests that built invalid graphs on purpose now check that the API refuses them. Two harnesses
+had rotted (A18). `sweep.cpp` loses its partition-numbering mode, which checked the removed
+engine. `probe.cpp` now reports the audit-time defects as rejected instead of aborting.
+
 ---
 
 ## 6. Results
@@ -451,17 +662,20 @@ are from an i5-7300 laptop; ours from one core of a cloud VM. "BFS" uses the pap
 
 ### 7.1 What explained the gaps to the paper
 
-The gaps were not in the state definition. They came from:
-1. **ordering** (§5.4);
-2. **the cutoff**, which made earlier counts look *better* than the paper's (K₁₂ appeared 19×
-   below it; exact, it is 1.8× above);
-3. **per-state overhead**, which the frontier engine removes.
+Every gap is now explained, and none was in the state definition:
+1. **Ordering** (§5.4). The paper's meshes are swept row by row; a breadth-first sweep from a
+   corner produces 5.9× more branching states on 10×10.
+2. **The counting convention** (§5.7). B¹ counts only the states a layer's variable splits.
+   Counted that way, every published B¹ is reproduced exactly, from 4 (N9) to 5,460,095 (N28).
+3. **Terminal placement on complete graphs** (§5.7). It does not change R but does change the
+   layer sizes.
+4. **The cutoff**, which had made earlier counts look *better* than the paper's (K₁₂ appeared
+   19× below it).
+5. **Per-state overhead**, which the frontier engine removes (§5.5).
 
-The remaining gap to the paper's B¹ is about 1.2× on meshes. Most likely it comes from tie-breaking
-in the authors' ordering, which the paper does not specify. On the complete graphs K₁₂ and K₁₃, where
-the ordering is irrelevant by symmetry, our layers are 1.7–1.8× wider, yet the runs are 8× faster. The
-paper's state definition may merge more aggressively on dense graphs; we did not investigate this
-further.
+Since the state counts agree exactly, the time and memory differences reflect the
+implementation: exact byte keys over the front only, a flat table with one record per state,
+and parallel expansion.
 
 ### 7.2 Threats to validity
 
@@ -469,12 +683,19 @@ further.
   by agreement between independent methods and orderings, and by reproducing published values.
 - The look-ahead and usable-exit rules are proved informally (Proposition 1, Lemma 2). Their
   soundness rests on those arguments and on the fuzzing.
-- The ordering heuristic was evaluated on meshes and random geometric graphs; other topologies may
-  behave differently. Cut-width loses on square meshes with perfect vertices.
-- Timing comparisons with the paper cross hardware generations.
+- The ordering heuristics (cut, edge order, work model) were designed and validated on meshes,
+  random geometric graphs and complete graphs. The out-of-sample checks used the same families;
+  other topologies may behave differently. The work model's exponent was fitted, but the choices
+  it makes do not change for exponents between 1 and 2.
+- Graphs that mix perfect and imperfect vertices use the imperfect-vertex rule; this regime was
+  not measured separately.
+- Timing comparisons with the paper cross hardware generations. Parallel timings come from a
+  4-core VM and vary by about ±10 % between runs.
 - The CI workflow has been dry-run locally but not yet executed on GitHub.
-- Hardy, Lucet & Limnios (2007) was not available. The BDD builder was checked against Carlier &
-  Lucet, Imai et al. and Kawahara et al., and against itself through canonical node counts.
+- Hardy, Lucet & Limnios (2007) was not available: its open-access copy (HAL, hal-00019249) is
+  blocked by the network policy of the environment used for this work. The BDD builder was
+  checked against Carlier & Lucet, Imai et al. and Kawahara et al., and against itself through
+  canonical node counts.
 
 ### 7.3 Lessons
 
@@ -492,22 +713,40 @@ further.
    vertices, less well with perfect ones.
 8. Unrun tests stop compiling, and sanitizers check the harness as well as the code.
 9. Keep corrections in the record (Appendix D).
+10. Before comparing with a published metric, reproduce its smallest instance. The 2×20 ladder
+    (4 states vs 5) settled what the large instances could not: the paper counts differently.
+11. Iteration order is a performance property. The same states visited in hash order instead of
+    creation order cost 1.5×, through cache locality alone.
+12. Make determinism a requirement of parallel numeric code from the start. Fixed blocks and
+    production positions cost little and keep results identical across machines and thread
+    counts.
+13. Fit the effect that drives the decision. The decision is between orderings of one graph, so
+    the model needs per-graph offsets; a pooled fit understated the cut and chose wrongly.
+14. Validate heuristics on data not used to design them (§5.9: 23 unseen graphs).
+15. Harnesses outside the build rot like unrun tests (A18). Compile them with every change.
 
 ---
 
 ## 8. Conclusion and future work
 
-libgraphrel is now exact by default, enforces its preconditions, and runs both methods on a
-frontier-local engine. That engine has exact keys and O(F) work per state, and its memory is
-bounded by the widest layer (LBL) or by the diagram itself (BDD).
+libgraphrel is now exact by default and enforces its preconditions; most invalid inputs can no
+longer be represented. Both methods run on a frontier-local engine, which has exact keys and
+O(F) work per state. Its memory is bounded by the widest layer (LBL) or by the diagram itself
+(BDD). Large layers are expanded in parallel with bit-identical results.
+
+The engine reproduces every reliability and every layer size published by Wu & Sun. It runs
+8–12× faster than the paper's implementation on one core, and 20–27× faster on four (N20–N25).
 
 Future work:
-- an ordering score that accounts for how long a layer stays wide (perfect-vertex meshes);
-- ordering the edges emitted with each vertex (5×5: 146 vs 208 states depending on edge ids);
-- why K₁₂'s layers are wider than the paper's;
-- turning `graph` into a class with private invariants (an API change);
-- reviewing the BDD builder against Hardy et al. (2007);
-- running the CI workflow on GitHub.
+- review the BDD builder against Hardy et al. (2007), once the paper is available (HAL
+  hal-00019249);
+- run the CI workflow on GitHub, which also covers the Windows/MSVC build;
+- parallelise the BDD builder's forward pass (the backward pass calls TeDDy, which is
+  single-threaded);
+- measure the ordering rules on graphs that mix perfect and imperfect vertices, and on other
+  topologies;
+- extend the parallel speed-up beyond the merge phase, for example by partitioning the parents
+  of a round by shard of their children.
 
 ---
 
@@ -548,6 +787,13 @@ Future work:
 | `6c37164` | Frontier engine; LBL on frontier states (A11) |
 | `7916203` | BDD built layer by layer on frontier states |
 | `b389dcb` | Remove the whole-graph engine |
+| `7cd1325` | This report, first paper-style version |
+| `0a8ad2b` | Report: N23 result |
+| `dea84ec` | Cut-width ordering: departing-first edge order (A15) |
+| `9be6bbe` | Branching-state statistic; exact B¹ reproduction (A14) |
+| `42c0e7d` | Parallel layer expansion, bit-identical; record-based state table |
+| `9361a6a` | Work-based ordering choice with perfect vertices (A16) |
+| `0d0f22e` | `graph` as a class (A17); harnesses repaired (A18) |
 
 ## Appendix B. Reproducing the evidence
 
@@ -566,23 +812,46 @@ UBSAN_OPTIONS=halt_on_error=1 ctest --test-dir build/asan -R graphrel --output-o
 ```
 
 ```bash
-# Large brute-force fuzz (this folder; link against build/libgraphrel/libgraphrel.a)
-g++ -std=c++20 -O2 -I. -Ilibgraphrel/include -Ilibgraphrel/src libgraphrel/audit/fuzz.cpp build/libgraphrel/libgraphrel.a -o fuzz
+# ThreadSanitizer on the parallel tests
+cmake -S . -B build/tsan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLIBTEDDY_BUILD_TESTS=ON -DLIBTEDDY_BUILD_GRAPHREL=ON "-DCMAKE_CXX_FLAGS=-fsanitize=thread" "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread"
+cmake --build build/tsan --target graphrel-test
+TSAN_OPTIONS=halt_on_error=1 build/tsan/tests/graphrel-test --run_test=graphrel_fuzz_test/fuzz_parallel_is_deterministic,parallel_large_layers_are_deterministic
+```
+
+```bash
+# Large brute-force fuzz (from the repository root; link against build/libgraphrel/libgraphrel.a)
+g++ -std=c++20 -O2 -I. -Ilibgraphrel/include -Ilibgraphrel/src libgraphrel/audit/fuzz.cpp build/libgraphrel/libgraphrel.a -o fuzz -pthread
 PAPER=1 ./fuzz 10000
 ```
 
 ```bash
-# Wu & Sun Table 2 (this folder)
-g++ -std=c++20 -O2 -I. -Ilibgraphrel/include -Ilibgraphrel/src libgraphrel/audit/table2.cpp build/libgraphrel/libgraphrel.a -o table2
-./table2 mesh 10 10 cutwidth
+# Wu & Sun Table 2 (from the repository root)
+g++ -std=c++20 -O2 -I. -Ilibgraphrel/include -Ilibgraphrel/src libgraphrel/audit/table2.cpp build/libgraphrel/libgraphrel.a -o table2 -pthread
+./table2 mesh 10 10 cutwidth            # library default
+THREADS=4 ./table2 mesh 13 13 cutwidth  # 4 threads
+./table2 mesh 5 5 paper                 # the paper's ordering: B1 = 118
+./table2 complete 12 paper 1            # terminals {0, 1}: B1 = 816,465
+```
+
+```bash
+# Ordering studies (§5.6, §5.9)
+g++ -std=c++20 -O2 -I. -Ilibgraphrel/include -Ilibgraphrel/src libgraphrel/audit/edge_order_lab.cpp build/libgraphrel/libgraphrel.a -o edge_order_lab -pthread
+LAB_PV=0.9 ./edge_order_lab geo40_4 cutwidth id rev new rem_new rem_old
+g++ -std=c++20 -O2 -I. -Ilibgraphrel/include -Ilibgraphrel/src libgraphrel/audit/level_lab.cpp build/libgraphrel/libgraphrel.a -o level_lab -pthread
+# the report's data set: 22 graphs x 3 orderings x 2 regimes, each run capped at 60 s and 4 GB
+for pv in 0.9 1.0; do for c in mesh5x5 mesh6x6 mesh7x7 mesh8x8 mesh9x9 mesh6x10 mesh4x12 mesh12x4 mesh3x10 mesh10x3 geo40_1 geo40_2 geo40_3 geo40_5 geo40_6 geo40_7 geo40_8 geo60_1 geo60_4 K8 K9 K10; do for st in bfs cutwidth dfs; do (ulimit -v 4000000; LAB_PV=$pv timeout 60 ./level_lab $c $st); done; done; done > levels.txt
+python3 libgraphrel/audit/fit_levels.py levels.txt
 ```
 
 | Harness | Purpose |
 |---|---|
 | `fuzz.cpp` | Brute force vs LBL and BDD; orderings; modes `PAPER`, `PAPER PERFECT`, `KMIN2`, default |
-| `table2.cpp` | Wu & Sun Table 2 networks: R, G^max, front size, total work, time, memory |
+| `table2.cpp` | Wu & Sun Table 2 networks: R, B¹, G^max, front size, total work, time, memory; `paper` ordering; `THREADS` |
 | `ordering_lab.cpp` | Ordering candidates: cheap metrics vs exact G^max and total work (`LAB_PV` sets vertex p) |
-| `sweep.cpp`, `order_sens.cpp`, `paper.cpp`, `probe.cpp` | Audit-time experiments (written against the original API) |
+| `edge_order_lab.cpp` | Orders of each vertex's edges (§5.6) |
+| `level_lab.cpp`, `fit_levels.py` | Per-level front, cut and layer size; regression and selector evaluation (§5.9) |
+| `probe.cpp` | One probe per audit finding (all now report the fix) |
+| `sweep.cpp`, `order_sens.cpp`, `paper.cpp` | Audit-time experiments, ported to the current API |
 
 The audit report ([`README.md`](README.md)) documents the findings as found at `39fe87d`.
 
@@ -594,7 +863,9 @@ The audit report ([`README.md`](README.md)) documents the findings as found at `
 | LBL | Layer-by-layer decomposition (Wu & Sun 2024) |
 | BS-BDD | Boundary-set BDD (Hardy et al. 2007) |
 | Front F | Processed vertices with unprocessed edges (boundary set, elimination front) |
-| G^max | Most states in one layer (Wu & Sun's B¹) |
+| G^max | Most states in one layer (`max_layer_size`) |
+| B¹ | Wu & Sun's layer size: most states in one layer that the layer's variable splits (`max_branching_layer_size`) |
+| Departing-first | Edge order within a vertex: edges whose other endpoint leaves the front first (§5.6) |
 | Vertex priority | Each vertex precedes its incident edges in the ordering |
 | Edge cut | Unprocessed edges with exactly one processed endpoint |
 | Dead end | Non-terminal block with at most one usable exit (Lemma 2) |
@@ -605,8 +876,10 @@ The audit report ([`README.md`](README.md)) documents the findings as found at `
 | Earlier statement | Correction |
 |---|---|
 | "The BDD is wrong on about 10 % of graphs" | Mostly inputs outside both methods' scope (\|K\| = 1). Within the assumptions plus p = 1 edges: 545/10,000. |
-| "K₁₂ is 19× below the paper thanks to coloop detection" | An artefact of the 1e-15 cutoff. Exactly, K₁₂ has 1,459,298 states, 1.8× the paper. |
+| "K₁₂ is 19× below the paper thanks to coloop detection" | An artefact of the 1e-15 cutoff. Exactly, K₁₂ has 1,459,298 states (edge-id order). In the paper's convention, with the paper's terminal placement, it has 816,465, equal to B¹ (§5.7). |
 | "N20 has 340,599 states" | Measured with the cutoff. Exactly: 387,481 (BFS). |
-| "Row sweep brings N20 to 1.08× the paper" | Measured with the cutoff. Exactly: 65,858, 1.22×. |
+| "Row sweep brings N20 to 1.08× the paper" | Measured with the cutoff. Exactly: 65,858 states, and 53,924 in the paper's convention, equal to B¹ (§5.7). |
 | "`lbl_calculator` can be copied" | It could be moved, not copied; the move had the dangling-reference problem. |
-| "The G^max gap needs the boundary definition from [20]/[33]" | Resolved: it was the ordering (§5.4). |
+| "The G^max gap needs the boundary definition from [20]/[33]" | Resolved: it was the ordering (§5.4) and the counting convention (§5.7). |
+| "Cut-width stays within 1.2–1.25× of the paper's B¹"; "on K₁₂ and K₁₃ our layers are 1.7–1.8× wider; the paper's state definition may merge more" | Both are the counting convention (and, for K_n, terminal placement). The state definitions are identical, and every B¹ is reproduced exactly (§5.7). |
+| Commit `9361a6a`'s message: the work model was "measured per level over 1,900 levels" | The data set has 14,532 levels from 22 graphs (114 runs). The code comment was corrected; the fitted coefficients are as stated. |

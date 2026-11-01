@@ -92,8 +92,9 @@ int main () {
 
     /*
     // Option 2: Build the same bridge network in code
-    teddy::graphrel::graph g(4, 5); // 4 vertices, 5 edges
-    g.terminals = {0, 3};           // k-terminal nodes
+    teddy::graphrel::graph g(4, 5); // 4 vertices (perfect by default), room for 5 edges
+    g.set_terminals({0, 3});        // k-terminal nodes
+    g.set_all_vertex_probs(0.9);    // or g.set_vertex_prob(v, p) per vertex
     g.add_edge(0, 1, 0.9);
     g.add_edge(0, 2, 0.9);
     g.add_edge(1, 2, 0.9);
@@ -101,7 +102,9 @@ int main () {
     g.add_edge(2, 3, 0.9);
     */
 
-    // Path 1: LBL Calculator — returns a scalar, discards intermediate layers
+    // Path 1: LBL Calculator — returns a scalar, discards intermediate layers.
+    // An optional second argument sets the number of threads (0 = all cores);
+    // the result is bit-identical for any thread count.
     double r_lbl = teddy::graphrel::calculate_reliability(g);
     std::cout << "LBL Reliability: " << r_lbl << "\n";
 

@@ -326,8 +326,9 @@ std::vector<std::size_t> vertices_of(const std::vector<variable>& ordering) {
 /// over levels of 2^(a * F), F = front size before the level. With perfect
 /// vertices a front vertex is absent only once pruned, so the layer size
 /// follows the number of block partitions of the front, and the edge cut adds
-/// little: fitted within graphs over 1,900 levels (meshes, random geometric
-/// graphs, BFS / DFS / cut-width), log2(states) = 1.61 F - 0.015 C + c(graph)
+/// little: fitted within graphs over 14,532 levels of 22 graphs (meshes,
+/// random geometric and complete graphs; BFS, DFS and cut-width orderings),
+/// log2(states) = 1.61 F - 0.015 C + c(graph)
 /// with perfect vertices, against 1.51 F + 0.10 C + c(graph) with imperfect
 /// ones. The choice between candidates is insensitive to a in [1, 2].
 double perfect_vertex_work(const graph& g, const std::vector<variable>& ordering) {
