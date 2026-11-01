@@ -15,7 +15,7 @@ jobs:
       matrix:
         include:
           - name: Windows MSVC
-            os: windows-latest
+            os: windows-2022  # the preset uses the "Visual Studio 17 2022" generator; windows-latest no longer has it
             preset: windows-msvc-release
             tests: false
 
