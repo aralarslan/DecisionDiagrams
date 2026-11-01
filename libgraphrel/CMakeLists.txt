@@ -14,7 +14,7 @@ add_library(
         src/common/boundary.cpp
         src/common/validation.cpp
         src/lbl/lbl_calculator.cpp
-        src/lbl/lbl_variable_processing.cpp
+        src/frontier/frontier.cpp
         src/diagram/diagram.cpp
 )
 
