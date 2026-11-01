@@ -646,14 +646,18 @@ every ordering that violates vertex priority is rejected. Sanitizer runs are cle
 
 ### 6.3 Performance progression (LBL, exact)
 
-| Case | Audit baseline | After §5.2 | After §5.4 | Frontier (§5.5) |
-|---|---|---|---|---|
-| 2×2000 ladder | 17.9 s, 692 MB | 2.3 s, 5 MB | 1.5 s | < 0.01 s, 4 MB |
-| 6×40 mesh | 7.5 s (with cutoff) | 3.0 s | 1.3 s | 0.05 s (621 states) |
-| 8×8 mesh, vertices 0.9 | — | 3.7 s (BFS) | 1.66 s | 0.22 s, 4 MB |
-| 10×10 mesh (N20) | 200.8 s, 882 MB (BFS, with cutoff) | 145 s, 1.0 GB (BFS) | 63 s | **4.8 s, 11 MB** |
-| K₁₂ (N27) | 2.2 s with cutoff (inexact) | 75.5 s, 1.2 GB | 75.5 s | **8.7 s, 164 MB** |
-| geo40_4 | — | 32 s (BFS) | 45 s | 3.2 s |
+| Case | Audit baseline | After §5.2 | After §5.4 | Frontier (§5.5) | Final (§5.6–§5.10): 1 thread / 4 threads |
+|---|---|---|---|---|---|
+| 2×2000 ladder | 17.9 s, 692 MB | 2.3 s, 5 MB | 1.5 s | < 0.01 s, 4 MB | < 0.01 s, 5 MB |
+| 6×40 mesh | 7.5 s (with cutoff) | 3.0 s | 1.3 s | 0.05 s (621 states) | 0.05 s (621 states) |
+| 8×8 mesh, vertices 0.9 | — | 3.7 s (BFS) | 1.66 s | 0.22 s, 4 MB | 0.2 s, 4 MB (layers too small to split) |
+| 10×10 mesh (N20) | 200.8 s, 882 MB (BFS, with cutoff) | 145 s, 1.0 GB (BFS) | 63 s | 4.8 s, 11 MB | **4.9 s, 14 MB / 2.2 s, 25 MB** |
+| K₁₂ (N27) | 2.2 s with cutoff (inexact) | 75.5 s, 1.2 GB | 75.5 s | 8.7 s, 164 MB | **6.9 s, 197 MB / 2.8 s, 253 MB** |
+| geo40_4 | — | 32 s (BFS) | 45 s | 3.2 s | 2.1 s (widest layer 418,948 → 219,252, §5.6) |
+
+The ladder was the one case that the parallel commit first made slower (18–28 ms), through
+per-level overhead from the 64 shards. The fix (`e71d745`) resets and scans only the shards in
+use and never moves the layers.
 
 ### 6.4 Reproducing Wu & Sun, Table 2
 
@@ -759,6 +763,9 @@ and parallel expansion.
     the model needs per-graph offsets; a pooled fit understated the cut and chose wrongly.
 14. Validate heuristics on data not used to design them (§5.9: 23 unseen graphs).
 15. Harnesses outside the build rot like unrun tests (A18). Compile them with every change.
+16. Re-measure the small and thin cases after a change aimed at large ones. The parallel commit
+    was measured on large layers; only the final sweep showed it had made a 10,000-level ladder
+    2–3× slower (`e71d745` fixed it).
 
 ---
 
@@ -829,6 +836,8 @@ Future work:
 | `42c0e7d` | Parallel layer expansion, bit-identical; record-based state table |
 | `9361a6a` | Work-based ordering choice with perfect vertices (A16) |
 | `0d0f22e` | `graph` as a class (A17); harnesses repaired (A18) |
+| `5ba247b`, `eaa262c`, `979199e` | This report: second phase, B¹ convention, final Table 2 |
+| `e71d745` | LBL: no per-level shard overhead on serial layers |
 
 ## Appendix B. Reproducing the evidence
 
