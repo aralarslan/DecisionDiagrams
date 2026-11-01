@@ -32,11 +32,26 @@ We then re-engineered the library in verified steps.
    failures: a few bytes instead of O(|V|+|E|).
 
 Every result is unchanged: 0 mismatches against exhaustive enumeration on 40,000 random graphs,
-and identical canonical BDD node counts. The 10×10 mesh now takes 4.8 s and 11 MB, against 145 s
-and 1 GB before the redesign and 42.9 s in the paper. Exact K₁₂ takes 8.7 s and 164 MB, against
-75 s and 1.2 GB. The 12×12 mesh takes 131 s, against 1,003 s in the paper. The paper's largest
-mesh, 1000×10 (10,000 vertices), was previously out of reach. It now reproduces the published
-reliability exactly in 664 s and 20 MB, against 8,066 s and 540 MB in the paper.
+and identical canonical BDD node counts.
+
+Counting states the way Wu & Sun do (only those a layer's variable splits), we reproduce every
+layer size they publish exactly, from the 4 states of the 2×20 ladder to the 5,460,095 of K₁₃.
+The earlier 1.2–1.8× "gaps" were a counting convention, not a difference in state definition.
+Further steps cut the work:
+- the edges of each vertex are ordered departing-first (up to 2.2× fewer states);
+- with perfect vertices, orderings are ranked by estimated work (up to 6.6× less, on graphs not
+  used to design the rule);
+- large layers are expanded in parallel, with results bit-identical for any thread count.
+
+Run times against the paper's:
+- 10×10 mesh: 4.9 s on one core and 2.2 s on four, against 42.9 s (145 s and 1 GB before the
+  redesign).
+- 13×13 mesh: 189 s on four cores, against 4,722 s.
+- 1000×10 mesh (10,000 vertices), previously out of reach: the published reliability in 304 s
+  and 33 MB, against 8,066 s and 540 MB.
+
+Finally, `graph` became a class whose invariants make the audit's invalid inputs
+unrepresentable.
 
 ---
 
@@ -519,9 +534,9 @@ one slot and one record instead of three arrays.
 - Larger layers with several grains.
 - ThreadSanitizer, ASan and UBSan are clean.
 
-**Results.** See §6.3 and §6.4. On 4 cores the speed-up is 2–3× (10×10: 4.4 s serial, 2.0–2.4 s
-with 4 threads; K₁₂: 8.8 s and 2.9 s). It is limited by the merge phase and by layers too small
-to split.
+**Results.** See §6.4. On 4 cores the speed-up over one thread is 2.1–3.2× (N20 4.9 s → 2.2 s,
+N23 604 s → 189 s, K₁₃ 61.8 s → 21.0 s). It is limited by the merge phase and by layers too small
+to split. The per-thread buffers raise peak memory by 1.3–1.9×.
 
 ### 5.9 Ordering score with perfect vertices (`9361a6a`)
 
@@ -642,31 +657,39 @@ every ordering that violates vertex priority is rejected. Sanitizer runs are cle
 
 ### 6.4 Reproducing Wu & Sun, Table 2
 
-All edges and vertices 0.9, terminals at maximum distance, exact computation. Wu & Sun's times
-are from an i5-7300 laptop; ours from one core of a cloud VM. "BFS" uses the paper's ordering;
-"cut-width" is the library default.
+All edges and vertices have probability 0.9, the terminals are at maximum distance, and the
+computation is exact. Wu & Sun's times are from an i5-7300 laptop; ours are from a 4-core cloud
+VM, with the library defaults (cut-width ordering). B¹ is compared in the paper's convention
+(§5.7); G^max counts all states of a layer.
 
-| Net | Graph | Paper R | Our R | Paper B¹ | G^max, BFS | G^max, cut-width | Paper time | Our time (cut-width) | Our peak memory |
-|---|---|---|---|---|---|---|---|---|---|
-| — | bridge, Fig. 1 | 0.760078728 | 0.760078728 | 5 (Fig. 3) | 5 | — | — | < 0.01 s | 3 MB |
-| N9 | 2×20 mesh | 0.230160 | 0.230160 | 4 | 5 | 5 | 0.0 s | < 0.01 s | 3 MB |
-| N6 | 3×10 mesh | 0.609632 | 0.609632 | 12 | 19 | 15 | 0.0 s | < 0.01 s | 3 MB |
-| N7 | 3×12 mesh | 0.579399 | 0.579399 | 12 | 19 | 15 | 0.0 s | < 0.01 s | 3 MB |
-| N8 | 5×5 mesh | 0.711988 | 0.711988 | 118 | 253 | 146 | 0.0 s | < 0.01 s | 3 MB |
-| N20 | 10×10 mesh | 0.714299 | 0.714299 | 53,924 | 387,481 (10.4 s) | 65,858 | 42.9 s | 4.8 s | 11 MB |
-| N21 | 11×11 mesh | 0.714418 | 0.714418 | 191,216 | — | 233,206 | 215.1 s | 22.7 s | 26 MB |
-| N22 | 12×12 mesh | 0.714482 | 0.714482 | 684,114 | — | 833,340 | 1,003.4 s | 131.3 s | 97 MB |
-| N23 | 13×13 mesh | 0.714515 | 0.714515 | 2,466,428 | — | 3,001,316 | 4,722.2 s | 604.4 s | 362 MB |
-| N25 | 1000×10 mesh | 0.673028 | 0.673028 | 53,924 | — | 65,858 | 8,066.5 s (540 MB) | 663.5 s | **20 MB** |
-| N26 | 1200×10 mesh | 0.664961 | 0.664961 | 53,924 | — | 65,858 | 9,082.6 s (540 MB) | 787.4 s | **23 MB** |
-| N27 | K₁₂ | 0.810000 | 0.810000 | 816,465 | — | 1,459,298 | 72.9 s | 8.7 s | 164 MB |
-| N28 | K₁₃ | 0.810000 | 0.810000 | 5,460,095 | — | 9,388,752 | 555.8 s | 72.7 s | 1.0 GB |
+| Net | Graph | Paper R | Our R | Paper B¹ | Our B¹ | Our G^max | Paper time | Ours, 1 thread | Ours, 4 threads | Peak memory (4 threads) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| — | bridge, Fig. 1 | 0.760078728 | 0.760078728 | — (Fig. 3: 5 drawn) | 3 | 5 | — | < 0.01 s | — | 3 MB |
+| N9 | 2×20 mesh | 0.230160 | 0.230160 | 4 | 4 | 5 | 0.0 s | < 0.01 s | — | 3 MB |
+| N6 | 3×10 mesh | 0.609632 | 0.609632 | 12 | 12 | 15 | 0.0 s | < 0.01 s | — | 3 MB |
+| N7 | 3×12 mesh | 0.579399 | 0.579399 | 12 | 12 | 15 | 0.0 s | < 0.01 s | — | 3 MB |
+| N8 | 5×5 mesh | 0.711988 | 0.711988 | 118 | 118 | 146 | 0.0 s | < 0.01 s | — | 3 MB |
+| N20 | 10×10 mesh | 0.714299 | 0.714299 | 53,924 | 53,924 | 65,858 | 42.9 s | 4.9 s | 2.2 s | 25 MB |
+| N21 | 11×11 mesh | 0.714418 | 0.714418 | 191,216 | 191,216 | 233,206 | 215.1 s | 21.6 s | 8.8 s | 66 MB |
+| N22 | 12×12 mesh | 0.714482 | 0.714482 | 684,114 | 684,114 | 833,340 | 1,003.4 s | 123.6 s | 42.8 s | 199 MB |
+| N23 | 13×13 mesh | 0.714515 | 0.714515 | 2,466,428 | 2,466,428 | 3,001,316 | 4,722.2 s | 604.4 s ᵃ | 188.6 s | 584 MB |
+| N25 | 1000×10 mesh | 0.673028 | 0.673028 | 53,924 | 53,924 | 65,858 | 8,066.5 s (540 MB) | 663.5 s ᵃ | 304.2 s | **33 MB** |
+| N26 | 1200×10 mesh | 0.664961 | 0.664961 | 53,924 | 53,924 | 65,858 | 9,082.6 s (540 MB) | 787.4 s ᵃ | 370.9 s | **34 MB** |
+| N27 | K₁₂ | 0.810000 | 0.810000 | 816,465 | 816,465 ᵇ | 1,240,964 | 72.9 s | 6.9 s | 2.8 s | 253 MB |
+| N28 | K₁₃ | 0.810000 | 0.810000 | 5,460,095 | 5,460,095 ᵇ | 8,045,429 | 555.8 s | 61.8 s | 21.0 s | 1.4 GB |
 
-- Every R reproduced matches the paper to all published digits.
-- On meshes, cut-width stays within 1.2–1.25× of the paper's B¹ (N20–N23: 1.22×) while BFS is up
-  to 7.2× above it.
-- Run times are 7–12× below the paper's on every mesh, and memory 27× below on N25/N26.
-- Memory is bounded by the widest layer only.
+ᵃ Measured at `0a8ad2b`, before the edge-order and table-layout changes, which leave these
+meshes' layer sizes unchanged. The other 1-thread times are from the final version.
+ᵇ With the two terminals first in the order, the paper's instance (§5.7). The other columns
+use terminals {0, n − 1}, where B¹ is 816,287 (K₁₂) and 5,442,750 (K₁₃) and R is the same.
+
+- Every R matches the paper to all published digits, and every B¹ is reproduced exactly.
+- On one core the runs are 8–12× faster than the paper's; on four cores, 20–27× faster.
+  Four threads give 2.1–3.2× over one (N23: 3.2×). The merge phase and layers too small to split
+  limit the speed-up. The thread buffers raise peak memory by 1.3–1.9× (N23: 584 MB with 4
+  threads, 362 MB with 1; N21: 66 MB and 34 MB).
+- Memory is bounded by the widest layer: the 1000×10 and 1200×10 meshes need 33–34 MB, against
+  540 MB in the paper.
 
 ---
 
@@ -747,7 +770,7 @@ O(F) work per state. Its memory is bounded by the widest layer (LBL) or by the d
 (BDD). Large layers are expanded in parallel with bit-identical results.
 
 The engine reproduces every reliability and every layer size published by Wu & Sun. It runs
-8–12× faster than the paper's implementation on one core, and 20–27× faster on four (N20–N25).
+8–12× faster than the paper's implementation on one core, and 20–27× faster on four (N20–N28).
 
 Future work:
 - review the BDD builder against Hardy et al. (2007), once the paper is available (HAL
