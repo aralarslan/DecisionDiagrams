@@ -61,9 +61,14 @@ public:
     void reset(std::size_t key_size, std::size_t expected, bool sharded) {
         key_size_ = key_size;
         sharded_ = sharded;
-        for (std::size_t s = 0; s < shard_count; ++s) {
-            const std::size_t share = sharded ? expected / shard_count + 1 : (s == 0 ? expected : 0);
-            shards_[s].reset(key_size, share);
+        if (sharded) {
+            ever_sharded_ = true;
+            for (detail::state_table& s : shards_)
+                s.reset(key_size, expected / shard_count + 1);
+        } else {
+            // Only shard 0 is read; the others are reset when next sharded.
+            // (Resetting all 64 on every level costs ~2x on long thin graphs.)
+            shards_[0].reset(key_size, expected);
         }
         order_.clear();
     }
@@ -72,8 +77,8 @@ public:
     std::size_t size() const { return sharded_ ? order_.size() : shards_[0].size(); }
     std::size_t memory_bytes() const {
         std::size_t n = order_.capacity() * sizeof(state_ref);
-        for (const detail::state_table& s : shards_)
-            n += s.memory_bytes();
+        for (std::size_t s = 0; s < (ever_sharded_ ? shard_count : 1); ++s)
+            n += shards_[s].memory_bytes();
         return n;
     }
     detail::state_table& shard(std::size_t s) { return shards_[s]; }
@@ -104,6 +109,7 @@ public:
 private:
     std::size_t key_size_ = 0;
     bool sharded_ = false;
+    bool ever_sharded_ = false; ///< shards 1..63 may hold memory
     std::array<detail::state_table, shard_count> shards_;
     std::vector<state_ref> order_;
 };
@@ -219,15 +225,19 @@ double lbl_calculator::calculate() {
     std::array<std::vector<std::uint64_t>, shard_count> created_at; // per shard, per entry
     position_bitmap created;
 
-    layer current, next;
-    current.reset(plan.key_size(0), 1, false);
+    // Layer `level` lives in layers[level % 2]; the two are reused, never moved
+    // (moving 64 tables per level costs ~2x on long thin graphs).
+    std::array<layer, 2> layers;
+    layers[0].reset(plan.key_size(0), 1, false);
     const std::vector<std::uint8_t> initial = plan.initial_key();
-    current.insert(initial.data(), detail::state_table::hash(initial.data(), initial.size()), 1.0);
+    layers[0].insert(initial.data(), detail::state_table::hash(initial.data(), initial.size()), 1.0);
 
     double success = 0.0;
     std::vector<block_sums> sums;
 
     for (std::size_t level = 0; level < plan.levels(); ++level) {
+        layer& current = layers[level % 2];
+        layer& next = layers[(level + 1) % 2];
         const std::size_t n = current.size();
         stats_.max_layer_size = std::max(stats_.max_layer_size, n);
         stats_.total_decompositions += n;
@@ -363,7 +373,6 @@ double lbl_calculator::calculate() {
         stats_.peak_table_bytes = std::max(stats_.peak_table_bytes,
                                            current.memory_bytes() + next.memory_bytes() +
                                                scratch_bytes);
-        std::swap(current, next);
     }
     // Every state is resolved by the last layer (the final front is empty).
     return success;
