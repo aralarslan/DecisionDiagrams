@@ -433,14 +433,16 @@ are from an i5-7300 laptop; ours from one core of a cloud VM. "BFS" uses the pap
 | N20 | 10×10 mesh | 0.714299 | 0.714299 | 53,924 | 387,481 (10.4 s) | 65,858 | 42.9 s | 4.8 s | 11 MB |
 | N21 | 11×11 mesh | 0.714418 | 0.714418 | 191,216 | — | 233,206 | 215.1 s | 22.7 s | 26 MB |
 | N22 | 12×12 mesh | 0.714482 | 0.714482 | 684,114 | — | 833,340 | 1,003.4 s | 131.3 s | 97 MB |
-| N23 | 13×13 mesh | 0.714515 | running | 2,466,428 | — | running | 4,722.2 s | > 20 min | — |
+| N23 | 13×13 mesh | 0.714515 | 0.714515 | 2,466,428 | — | 3,001,316 | 4,722.2 s | 604.4 s | 362 MB |
 | N25 | 1000×10 mesh | 0.673028 | 0.673028 | 53,924 | — | 65,858 | 8,066.5 s (540 MB) | 663.5 s | **20 MB** |
 | N26 | 1200×10 mesh | 0.664961 | 0.664961 | 53,924 | — | 65,858 | 9,082.6 s (540 MB) | 787.4 s | **23 MB** |
 | N27 | K₁₂ | 0.810000 | 0.810000 | 816,465 | — | 1,459,298 | 72.9 s | 8.7 s | 164 MB |
 | N28 | K₁₃ | 0.810000 | 0.810000 | 5,460,095 | — | 9,388,752 | 555.8 s | 72.7 s | 1.0 GB |
 
 - Every R reproduced matches the paper to all published digits.
-- On meshes, cut-width stays within 1.2–1.25× of the paper's B¹ while BFS is up to 7.2× above it.
+- On meshes, cut-width stays within 1.2–1.25× of the paper's B¹ (N20–N23: 1.22×) while BFS is up
+  to 7.2× above it.
+- Run times are 7–12× below the paper's on every mesh, and memory 27× below on N25/N26.
 - Memory is bounded by the widest layer only.
 
 ---
