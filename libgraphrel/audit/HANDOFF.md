@@ -47,6 +47,8 @@ Run times against the paper's:
 - 10×10 mesh: 4.9 s on one core and 2.2 s on four, against 42.9 s (145 s and 1 GB before the
   redesign).
 - 13×13 mesh: 189 s on four cores, against 4,722 s.
+- 14×14 mesh, the paper's largest (N24): 918 s and 2.0 GB on four cores, against 29,446 s and
+  3.9 GB.
 - 1000×10 mesh (10,000 vertices), previously out of reach: the published reliability in 304 s
   and 33 MB, against 8,066 s and 540 MB.
 
@@ -478,6 +480,7 @@ published B¹ is reproduced exactly.
 | N21 | 11×11 | 191,216 | 191,216 |
 | N22 | 12×12 | 684,114 | 684,114 |
 | N23 | 13×13 | 2,466,428 | 2,466,428 |
+| N24 | 14×14 | 8,951,945 | 8,951,945 |
 | N25 | 1000×10 | 53,924 | 53,924 |
 | N27 | K₁₂ | 816,465 | 816,465 |
 | N28 | K₁₃ | 5,460,095 | 5,460,095 |
@@ -485,7 +488,7 @@ published B¹ is reproduced exactly.
 Two details had to be identified:
 - **Mesh ordering.** The counts match a row-by-row sweep. A breadth-first search from a corner
   sweeps anti-diagonals (10×10: 316,303 branching states). The library's cut-width ordering
-  produces the row sweep, so its counts equal B¹ on N20–N25 as well (N23 and N25 above were
+  produces the row sweep, so its counts equal B¹ on N20–N26 as well (N23–N25 above were
   measured with it).
 - **Terminals of the complete graphs.** Every pair of vertices of K_n is at "maximum distance",
   so the instance is defined only up to relabelling, and R does not depend on the choice. The
@@ -677,6 +680,7 @@ VM, with the library defaults (cut-width ordering). B¹ is compared in the paper
 | N21 | 11×11 mesh | 0.714418 | 0.714418 | 191,216 | 191,216 | 233,206 | 215.1 s | 21.6 s | 8.8 s | 66 MB |
 | N22 | 12×12 mesh | 0.714482 | 0.714482 | 684,114 | 684,114 | 833,340 | 1,003.4 s | 123.6 s | 42.8 s | 199 MB |
 | N23 | 13×13 mesh | 0.714515 | 0.714515 | 2,466,428 | 2,466,428 | 3,001,316 | 4,722.2 s | 604.4 s ᵃ | 188.6 s | 584 MB |
+| N24 | 14×14 mesh | 0.714532 | 0.714532 | 8,951,945 | 8,951,945 | 10,883,485 | 29,445.6 s (3,889 MB) | — ᶜ | 918.0 s | **2.0 GB** |
 | N25 | 1000×10 mesh | 0.673028 | 0.673028 | 53,924 | 53,924 | 65,858 | 8,066.5 s (540 MB) | 663.5 s ᵃ | 304.2 s | **33 MB** |
 | N26 | 1200×10 mesh | 0.664961 | 0.664961 | 53,924 | 53,924 | 65,858 | 9,082.6 s (540 MB) | 787.4 s ᵃ | 370.9 s | **34 MB** |
 | N27 | K₁₂ | 0.810000 | 0.810000 | 816,465 | 816,465 ᵇ | 1,240,964 | 72.9 s | 6.9 s | 2.8 s | 253 MB |
@@ -686,9 +690,11 @@ VM, with the library defaults (cut-width ordering). B¹ is compared in the paper
 meshes' layer sizes unchanged. The other 1-thread times are from the final version.
 ᵇ With the two terminals first in the order, the paper's instance (§5.7). The other columns
 use terminals {0, n − 1}, where B¹ is 816,287 (K₁₂) and 5,442,750 (K₁₃) and R is the same.
+ᶜ Not run serially; an earlier serial attempt was stopped at 30 minutes.
 
 - Every R matches the paper to all published digits, and every B¹ is reproduced exactly.
-- On one core the runs are 8–12× faster than the paper's; on four cores, 20–27× faster.
+- On one core the runs are 8–12× faster than the paper's; on four cores, 20–32× faster (N24:
+  918 s against 29,446 s, with 2.0 GB against 3.9 GB).
   Four threads give 2.1–3.2× over one (N23: 3.2×). The merge phase and layers too small to split
   limit the speed-up. The thread buffers raise peak memory by 1.3–1.9× (N23: 584 MB with 4
   threads, 362 MB with 1; N21: 66 MB and 34 MB).
@@ -777,7 +783,7 @@ O(F) work per state. Its memory is bounded by the widest layer (LBL) or by the d
 (BDD). Large layers are expanded in parallel with bit-identical results.
 
 The engine reproduces every reliability and every layer size published by Wu & Sun. It runs
-8–12× faster than the paper's implementation on one core, and 20–27× faster on four (N20–N28).
+8–12× faster than the paper's implementation on one core, and 20–32× faster on four (N20–N28).
 
 Future work:
 - review the BDD builder against Hardy et al. (2007), once the paper is available (HAL
