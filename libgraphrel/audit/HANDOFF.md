@@ -1,579 +1,610 @@
-# libgraphrel: audit and optimisation — handoff log
+# Auditing and Re-engineering libgraphrel: Exact K-Terminal Network Reliability with Frontier-Local Layer-by-Layer Decomposition
 
-This is the traceability record for the libgraphrel audit and the follow-up work. For each
-finding it records what was seen, how it was found, why a given fix was chosen over the
-alternatives, what the measured result was, and what the process taught us. It is meant to be
-read cold by someone picking the work up.
+**Aral** — technical report and handoff, November 2026
 
-| | |
-|---|---|
-| Library | `libgraphrel/` in the DecisionDiagrams (TeDDy) fork |
-| Audit baseline | commit `39fe87d` ("More fixes") |
-| Audit report | [`README.md`](README.md) in this folder (findings 1.1–4, reference checks, status table) |
-| Audit commits | the first three commits of the work branch — report and harnesses only, no library changes |
-| Work branch | `feat/libgraphrel-optimisations` — fixes, tests, CI, performance |
-| References used | Wu & Sun 2024 (LBL); Carlier & Lucet 1996; Imai, Sekine & Imai 1999; Kawahara et al. 2019. Hardy, Lucet & Limnios 2007 was **not** available |
+Branch `feat/libgraphrel-optimisations` of the DecisionDiagrams (TeDDy) fork. Audit baseline: commit `39fe87d`.
 
 ---
 
-## 1. What libgraphrel computes, and which reference governs what
+## Abstract
 
-libgraphrel computes **K-terminal network reliability with imperfect vertices**: the probability
-that every terminal in K is up and all terminals are connected by working edges through working
-vertices. Edges and vertices fail independently.
+libgraphrel computes the K-terminal reliability of networks with unreliable edges *and*
+vertices. It offers two methods: the layer-by-layer decomposition (LBL) of Wu & Sun (2024), and
+a boundary-set binary decision diagram (BS-BDD) whose structure-function view enables TeDDy's
+importance analysis.
 
-It has two algorithms. They follow different references, and that matters when judging them:
+We audited the library against its four governing references, using a brute-force oracle,
+differential fuzzing restricted to each method's stated assumptions, and reproduction of the
+published benchmarks. The audit found:
+- a semantic error in the BDD construction (edges incident to failed vertices contracted);
+- unenforced preconditions that turned invalid inputs into silently wrong answers;
+- a hidden probability cutoff that made results inexact and distorted every performance
+  measurement taken on top of it;
+- costs quadratic in graph size;
+- a test suite that no longer compiled.
 
-| Entry point | Algorithm | Governing reference |
+We then re-engineered the library in verified steps.
+1. The preconditions are now enforced and the approximation is opt-in with a rigorous error bound.
+2. A cut-width variable ordering replaces breadth-first search. On the paper's 10×10 mesh it cuts
+   the peak number of states per layer from 387,481 to 65,858.
+3. A **frontier-local state representation** replaces whole-graph states. It stores, per state,
+   only the partition of the processed/unprocessed boundary, the terminal marks and the vertex
+   failures: a few bytes instead of O(|V|+|E|).
+
+Every result is unchanged: 0 mismatches against exhaustive enumeration on 40,000 random graphs,
+and identical canonical BDD node counts. The 10×10 mesh now takes 4.8 s and 11 MB, against 145 s
+and 1 GB before the redesign and 42.9 s in the paper. Exact K₁₂ takes 8.7 s and 164 MB, against
+75 s and 1.2 GB. The 12×12 mesh takes 131 s, against 1,003 s in the paper. The paper's largest
+mesh, 1000×10 (10,000 vertices), was previously out of reach. It now reproduces the published
+reliability exactly in 664 s and 20 MB, against 8,066 s and 540 MB in the paper.
+
+---
+
+## 1. Introduction
+
+### 1.1 Problem
+
+Given an undirected graph G = (V, E), independent working probabilities p(e) and p(v), and a
+terminal set K ⊆ V, the **K-terminal reliability with imperfect vertices** (k-NR-IV) is the
+probability that every terminal works and all terminals are connected by working edges through
+working vertices. The problem is #P-complete, so exact methods trade exponential cost in a
+structural width for polynomial cost in graph size.
+
+### 1.2 The two methods in libgraphrel
+
+| Entry point | Method | Governing reference |
 |---|---|---|
-| `calculate_reliability` (`src/lbl/`) | Layer-by-layer decomposition (LBL) | Wu & Sun (2024), the paper's own contribution |
-| `build_diagram` (`src/diagram/`) | Boundary-set BDD, built top-down with memoisation | Hardy, Lucet & Limnios (2007); Wu & Sun only describe it as their §2.3 baseline |
-| Shared (`partition`, `bell_cache`, `boundary`, `graph_operations`) | Boundary-set partitions, class numbering, loop/coloop rules | Carlier & Lucet (1996); Imai et al. (1999) |
-| Vertex-failure semantics, variable order | k-NR-IV, R_EV | Kawahara et al. (2019) |
+| `calculate_reliability` | Layer-by-layer recursive decomposition (LBL) | Wu & Sun (2024) |
+| `build_diagram` | Boundary-set BDD (a TeDDy `bss_manager` diagram) | Hardy, Lucet & Limnios (2007); used as baseline in Wu & Sun §2.3 |
+| Shared machinery | Boundary sets, partitions, loop/coloop rules | Carlier & Lucet (1996); Imai, Sekine & Imai (1999) |
+| Vertex-failure semantics, variable order | k-NR-IV, R_EV | Kawahara, Sonoda, Inoue & Kasahara (2019) |
 
-**Lesson 1.** The first version of the audit judged both algorithms against Wu & Sun. You pointed
-out that the paper covers LBL only, and that reframed several findings: what had looked like
-"bugs" were actually unenforced preconditions of the method. Start an audit of
-algorithmic code by establishing which source defines which piece of code.
+### 1.3 Contributions
 
----
-
-## 2. How the work was done
-
-The process, in order. Each step produced evidence that the next one used.
-
-1. **Read the whole library**, about 4,800 lines.
-2. **Strict compile** with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Wmissing-declarations`. There were only 15 warnings, so the compiler wasn't where the problems were.
-3. **Differential fuzzing against a brute-force oracle** (`fuzz.cpp`). Random graphs with 2–7
-   vertices and up to 9 edges are small enough to enumerate all 2^(V+E) states exactly. Each one
-   was checked against `calculate_reliability` and `build_diagram`.
-4. **Targeted repros** (`probe.cpp`): the smallest graph that shows each finding.
-5. **Scaling and profiling**: ladders and grids for time and peak memory; callgrind on a 7×7 grid.
-6. **Read Wu & Sun** and restrict fuzzing to its assumptions (`PAPER=1`): connected simple graph,
-   2 ≤ |K|, all probabilities strictly inside (0, 1).
-7. **Reproduce the paper's Table 2** (`paper.cpp`): the bridge example, N6–N9, N20 and N27.
-8. **Read the supporting references** and check the shared code against them, e.g. class
-   numbering against Carlier & Lucet's Algorithm 2 over every partition (`sweep.cpp numbering`).
-9. **Ordering experiments** (`order_sens.cpp`, `sweep.cpp`) to explain why our peak layer sizes
-   differ from the paper's.
-10. **Work branch**: fixes in small, separately reviewable commits. Each commit is verified with
-    the brute-force tests, the existing tests, a sanitizer build, and before/after benchmarks
-    whose results had to be **identical** whenever the change was meant to be performance-only.
-
-Everything is reproducible from the files in this folder (see §6).
+1. An audit methodology for exact reliability code. The oracle is brute force on small graphs,
+   with fuzzing modes that mirror each method's assumptions. This separates genuine defects from
+   inputs outside a method's scope.
+2. A catalogue of defects with root causes, plus the corresponding fixes and regression tests.
+3. Proof by measurement that the performance changes preserve behaviour: identical orderings,
+   layer sizes and canonical BDD node counts.
+4. A cut-width ordering heuristic, and the empirical finding that the **edge cut**, not the
+   boundary size, predicts the state count.
+5. A frontier-local engine shared by LBL and BDD. It has exact state keys, O(F) work per state,
+   and no Bell-number ceiling.
+6. A traceable record of every decision, including the mistakes and how they were corrected.
 
 ---
 
-## 3. Findings, decisions and results
+## 2. Background
 
-Each entry has the same shape: **Seen**, **How found**, **Root cause**, **Options**,
-**Decision**, **Result**, **Commit**.
+### 2.1 Decomposition and isomorphic subproblems
 
-### 3.1 The existing graphrel test suite did not compile
+Processing the components in a fixed order and branching on each one (Shannon expansion,
+R(G) = p·R(G | x works) + (1−p)·R(G | x fails)) yields a binary tree with exponentially many
+leaves. Exact methods become practical by **merging** subproblems that are guaranteed to have the
+same future:
+- BDDs share isomorphic nodes;
+- LBL merges isomorphic subgraphs within a layer and adds their probabilities (Wu & Sun 2024, Eq. 4).
 
-- **Seen.** `graphrel-test` failed to build: `decomp_state` has no member `union_find`.
-- **How found.** The first time the real test suite was built on the work branch (Boost.Test
-  had to be installed first).
-- **Root cause.** The member was renamed to `uf_`; one test still used the old name. CI never built tests, so nobody noticed.
-- **Decision.** One-line fix, committed on its own so it doesn't get mixed up with behaviour changes.
-- **Result.** All 4 existing suites pass.
-- **Commit.** `b6551c7`.
-- **Lesson 2.** Tests that are never run stop compiling. Getting CI to run the tests was
-  therefore part of the fix, not an extra (see 3.13).
+### 2.2 Why the boundary is enough
 
-### 3.2 BDD routes connectivity through a failed vertex via p = 1 edges
+At any point in the decomposition the graph splits into the processed part (variables already
+decided) and the unprocessed part. Two kinds of information are involved:
+- **Static information**, stored once and shared by all states: the graph, the probabilities,
+  the ordering, and facts derived from them, such as the level at which each vertex sees its last
+  edge. All states at the same layer have the same unprocessed part.
+- **Dynamic information**, per state: the outcomes of the processed variables. Most of it can be
+  forgotten.
 
-- **Seen.** With s=0 and t=2, edges 0–1 and 1–2 at p = 1 and 0–2 at p = 0.5, and vertex 1 at
-  p = 0.5: brute force and LBL give 0.75, the BDD gives 1.0.
-- **How found.** Brute-force fuzzing. Within Wu & Sun's assumptions plus some p = 1 edges, the BDD
-  was wrong on 545 of 10,000 graphs; with all p strictly inside (0, 1) it was wrong on 0.
-- **Root cause.** `diagram.cpp` contracted any edge with p ≥ 1 *before* checking whether the
-  edge had already been removed by a vertex failure (a "ghost" edge). Kawahara et al. §3.1 define
-  R_EV so that every edge incident to an unavailable vertex is 0. The shortcut set it to 1.
-- **Options.**
-  1. Drop the perfect-edge shortcut.
-  2. Reorder the two checks.
-  3. Turn p = 1 edges into structure up front, by contracting them in the input graph.
-- **Decision.** Reorder (2). It's the smallest diff, it keeps the shortcut (which saves BDD
-  variables), and it follows the reference's semantics exactly.
-- **Result.** 0 mismatches in every fuzz mode, plus a regression test.
-- **Commit.** `5df2a69`.
+The **front** (boundary set) at a level is the set of processed vertices that still have
+unprocessed edges (Carlier & Lucet 1996 §4.1; Imai et al. 1999's elimination front).
 
-### 3.3 |K| = 1
+**Proposition 1 (sufficiency of the front state).** Let x and y be two outcomes of the processed
+variables that agree on:
+- (a) which front vertices are up;
+- (b) the partition of the up front vertices into blocks connected through the processed part;
+- (c) which blocks contain a terminal.
 
-- **Seen.** One terminal with p = 0.3: LBL gives 0.3, BDD gives 1.0, and LBL gives the wrong
-  answer too when the ordering doesn't start at the terminal (666 of 10,000).
-- **Root cause.** Both algorithms treat |K| < 2 as "already connected" and stop before the
-  terminal's own vertex variable is processed.
-- **Options.**
-  1. Reject |K| < 2, as all four references assume 2 ≤ |K|.
-  2. Define R = p(terminal).
-- **Decision.** Option 2, and reject |K| = 0. The existing test `single_terminal_trivial` shows
-  |K| = 1 was meant to be supported, and R = p(t) is the natural meaning. It's handled up front
-  in both `calculate()` and `build()`, so it doesn't depend on the ordering. Easy to flip to option 1.
-- **Result.** Both paths agree with brute force in the `any` fuzz mode.
-- **Commit.** `5df2a69`.
+Suppose also that neither x nor y has already failed or succeeded. Then for every outcome z of
+the unprocessed variables, the system works under (x, z) if and only if it works under (y, z).
 
-### 3.4 Unsorted terminals silently gave wrong answers
+*Proof sketch.* Take any path between two terminals in the working subgraph under (x, z). Split
+it into maximal segments that use only processed edges and segments that use only unprocessed
+edges. A processed segment can leave the processed region only at a front vertex, because
+interior processed vertices have no unprocessed edges. So each processed segment either connects
+two front vertices of the same block, or connects a terminal to a front vertex of a terminal
+block. Unprocessed segments depend only on z and on which front vertices are up. Hence (a)–(c)
+determine every possible connection, and the same path structure exists under (y, z). Terminals
+inside the processed region are represented by the marks (c). A terminal block that lost its
+last front vertex was already resolved as success or failure, which the hypothesis excludes. ∎
 
-- **Seen.** Path 0–1–2 with terminals `{2, 0}` and p(v0) = 0.5: exact 0.405, both algorithms 0.855.
-- **Root cause.** The code calls `binary_search` on `graph::terminals`. Only `read_graph` sorted
-  that list, and `validate()` never checked it. An unrecognised terminal's failure was treated as
-  an ordinary vertex deletion, so a *failure* was counted as *success*.
-- **Options.**
-  1. Sort silently inside the algorithms.
-  2. Reject unsorted input.
-  3. Make `graph` a class with private terminals.
-- **Decision.** Option 2, plus a new `graph::set_terminals()` that sorts and deduplicates. Sorting
-  a `const graph&` silently would mean copying the graph; option 3 is an API break, deferred to the
-  redesign.
-- **Result.** `validate()` now also checks for an empty terminal set, NaN probabilities, edge ids
-  and that the adjacency lists are complete. Error messages name the specific problem.
-- **Commit.** `5df2a69`.
+So two states with equal (a)–(c) are interchangeable, and merging them with summed probabilities
+is exact. This is the isomorphism rule in Carlier & Lucet (§4.4, §5.2), Imai et al. (Theorem 1)
+and Wu & Sun (§2.3).
 
-### 3.5 Custom orderings were not checked
+**Lemma 2 (dead ends).** A block with no terminal and at most one usable unprocessed edge cannot
+lie on a path between terminals: such a path would have to enter and leave the block through two
+different edges. Marking its vertices absent changes no future outcome. ∎
 
-- **Seen.** Path 0–1–2 with p(v1) = 0.5: an edges-first ordering returns 0.81 and an ordering
-  with missing variables returns 0.0; the exact value is 0.405.
-- **How we established the real precondition.** We fuzzed LBL inside the paper's assumptions with
-  four kinds of ordering:
+**Example.** The bridge of Wu & Sun Fig. 1: K = {v1, v4}, ordering v1, v2, e1, v3, e2, e3, v4,
+e4, e5, all probabilities 0.9. After e3, v1 has no unprocessed edges, so the front is {v2, v3}.
+The live states are:
+- `[v2 v3]*` — both connected to v1;
+- `[v2]* [v3]` — only v2 reaches v1;
+- `[v2] [v3]*` — only v3 reaches v1;
+- `[v2]*` with v3 down;
+- `[v3]*` with v2 down.
 
-  | Ordering | Mismatches out of 10,000 |
-  |---|---|
-  | BFS | 0 |
-  | DFS | 0 |
-  | random, respecting vertex priority | 0 |
-  | random, ignoring vertex priority | 8,068 |
+By Lemma 2, `[v3]` in the second state has no terminal and a single remaining edge (e5), so it is
+equivalent to v3 being down. The same holds for the third state. That leaves three states, which
+is what the implementation produces at that layer.
 
-  So the precondition is "every variable exactly once, and each vertex before its incident edges"
-  (vertex priority), together with |K| ≥ 2. The paper's BFS is one way to satisfy it, not a
-  requirement in itself.
-- **Decision.** `calculate_reliability(g, ordering)` checks exactly that precondition in O(V+E)
-  and throws `std::invalid_argument` otherwise.
-- **Commit.** `5df2a69`.
+### 2.3 Assumptions of the references
 
-### 3.6 The 1e-15 probability cutoff (the biggest surprise)
-
-- **Seen.** LBL silently dropped every branch with probability ≤ 1e-15. On a 5×5 grid with
-  p = 0.9999 the unreliability 1−R was off by 1.2e-6 relative (5.5e-9 without the cutoff).
-- **Decision, first version.** Remove it: the paper's algorithm is exact.
-- **What happened next.** The K₁₂ paper test went from 2 s to 107 s. Measured exactly, K₁₂ peaks
-  at **1,459,298** states, against 42,665 with the cutoff: the cutoff had been discarding about 97 %
-  of the states. It had also distorted the audit's own figures:
-  - K₁₂ was reported "19× below the paper, thanks to coloop detection"; it is really 1.8× above.
-  - N20 was reported at 340,599 states; exactly it is 387,481.
-- **Options.**
-  1. Keep the cutoff (fast but inexact, with no error bound).
-  2. Exact only (correct, slow on dense graphs).
-  3. Exact by default, plus an opt-in pruned mode that tracks how much probability it drops.
-- **Decision.** Option 3. `calculate_reliability()` is exact.
-  `calculate_reliability_bounds(g, threshold)` drops branches at or below the threshold, adds up
-  their probability, and returns `[lower, upper]` with `upper = lower + dropped`. That interval is
-  guaranteed to contain R. Callers get the speed when they ask for it, and they know the error.
-- **Result.** K₁₂ in 1.9 s with an interval narrower than 1e-9. A test checks that the interval
-  contains the brute-force value on 300 random graphs, even with an aggressive threshold of 0.05.
-- **Commit.** `5df2a69`. The corrected figures are in the report (`732ea1c`).
-- **Lesson 3.** An approximation hidden inside an "optimisation" also corrupts every measurement
-  made on top of it, including the auditor's. Measure the exact behaviour first. Make
-  approximations opt-in, explicit and bounded.
-
-### 3.7 Parser and writer
-
-- **Seen.**
-  - `e 0 1 O.9` (letter O) parsed as probability **0**, because a failed `operator>>` stores 0.
-  - Trailing junk was accepted.
-  - A negative count wrapped around to a huge `size_t`.
-  - `write_graph` used 15 significant digits, so doubles did not round-trip.
-- **Decision.** Tokenise each line; parse integers with `std::from_chars` and probabilities with a
-  classic-locale stream; require every token to be consumed fully; check token counts per line
-  type; cap the vertex count at `graph::max_vertices`; don't trust the declared edge count for a
-  large `reserve`. Write probabilities with `max_digits10` and restore the stream's state
-  afterwards.
-  - `std::from_chars` for `double` was avoided because libc++ only gained it recently.
-- **Result.** Ten malformed inputs are rejected with line-numbered `ParseError`s, and the
-  round-trip is bit-exact. The example program's output files now show `0.90000000000000002`,
-  which is the actual stored value.
-- **Commit.** `5df2a69`.
-
-### 3.8 Validation order and object lifetime
-
-- **Seen.**
-  - `lbl_calculator` built the ordering and boundary tables *before* calling `validate()`, so an
-    invalid graph could index out of bounds before the check could report it.
-  - `build_diagram` never validated at all.
-  - `lbl_calculator` could be copied, but its `boundary_` member points at `ordering_`, so a copy
-    would dangle.
-- **Decision.** Validate in the constructor initialiser list
-  (`net_(detail::require_valid(g, ...))`), validate in every public entry point, and delete the copy operations.
-- **Commit.** `5df2a69`.
-
-### 3.9 LeakSanitizer reported leaks in every suite
-
-- **Seen.** Every graphrel suite failed under ASan, including the trivial unit tests.
-- **How found.** The stack traces were all inside the static initialisers of
-  `libboost_unit_test_framework.so`.
-- **Root cause.** The test file included the header-only `boost/test/included/unit_test.hpp` *and*
-  the target linked the shared Boost.Test library, so two framework instances existed. The main
-  TeDDy tests already used `BOOST_TEST_DYN_LINK`.
-- **Decision.** Do the same: shared library plus `BOOST_TEST_DYN_LINK`, set once in CMake for both
-  test translation units.
-- **Result.** Zero sanitizer reports.
-- **Commit.** `5df2a69`.
-- **Lesson 4.** Sanitizers check the test harness as well as the library. Confirm which side a
-  report comes from before changing library code.
-
-### 3.10 `bell_cache` sized by V+E, and silent overflow beyond F = 25
-
-- **Seen.**
-  - The Stirling-number table was built for n = V+E, i.e. O((V+E)²) memory: 1.6 GB of the
-    2×4000 ladder's 2.76 GB. Yet a state's boundary can never exceed the static front.
-  - Separately, B(26) > 2⁶⁴, so for boundaries of 26+ vertices the partition numbers wrap around
-    and distinct states can collide. `stirling()` also returned 0 beyond the table.
-- **Decision.**
-  - `boundary_computer` computes the largest static front in O(V+E), and the cache is sized to
-    `min(that, 25)`.
-  - `bell_cache` refuses sizes above 25.
-  - `canonicalize_partition` throws `std::length_error` if a state's boundary exceeds the cache.
-  - Throwing is better than a wrong answer; such graphs have astronomically many states anyway.
-- **Commit.** `e791a17`.
-
-### 3.11 Boundary precomputation was O(L·V) memory and O(L·(V+E)) time
-
-- **Seen.** Two `std::set`s were rebuilt for every level and a vertex list stored per level; one
-  of the two lists was never read. An `unordered_map` keyed by dense edge ids was looked up for
-  every remaining edge of every state.
-- **Decision.** Two flat arrays: the level of each edge, and the first level at which each vertex
-  is reached. A vertex is on a state's boundary at level l if `first_level(v) < l` and it still has
-  a remaining edge at level ≥ l. That is the same definition as before (Imai's elimination front,
-  restricted to the state's remaining edges), computed in O(remaining edges) per state with
-  thread-local scratch buffers and no per-level tables.
-- **Commit.** `e791a17`.
-
-### 3.12 Redundant whole-graph connectivity rebuilds
-
-- **Seen.** Every state rebuilt a whole-graph union-find to check "terminals still connectable?",
-  and the standard branching did it twice more. The profile showed union-find taking about 35 % of
-  the time.
-- **Reasoning.**
-  - States enter a layer only through operations that cannot disconnect the terminals: contraction
-    never does, and deleting a non-coloop edge doesn't by definition (Imai et al., Lemma 1). The
-    coloop test runs first.
-  - Vertex deletion *can* disconnect, and it is still checked.
-  - So one check on the initial state is enough.
-- **Decision.** Remove the redundant checks in both LBL and BDD. Debug builds `assert` the
-  invariant on every state, so the sanitizer CI job, which builds Debug, verifies it on every fuzz case.
-- **Commit.** `e791a17`.
-
-### 3.13 Ordering helpers were polynomially slow
-
-- **Seen.**
-  - BFS and DFS scanned all E edges for every vertex.
-  - DFS recursed through `std::function`, so it could overflow the stack on long paths.
-  - `estimate_max_boundary_size` was O(L²·E): 73 s on a 40×40 grid in the audit, and the 100×100
-    benchmark timed out after 600 s.
-- **Decision.**
-  - When a vertex is emitted, only its own incident edges can become ready, so scan just those
-    (adjacency order = edge-id order, which is what the old full scan produced).
-  - DFS uses an explicit stack.
-  - The estimator is maintained incrementally.
-  - The internal helpers are no longer exported.
-- **Verification.** The output must be byte-identical: BFS and DFS orderings plus estimates on
-  3,036 graphs (3,000 random, including self-loops, multi-edges and disconnected graphs, plus 36
-  grids), diffed against the old implementation, give 6,072 identical lines.
-- **Commit.** `e791a17`.
-
-### 3.14 CI never ran the tests
-
-- **Seen.** The workflow only configured and built. `LIBTEDDY_BUILD_TESTS` was off in every
-  preset, and Boost wasn't installed.
-- **Decision.**
-  - The Linux GCC and Clang jobs install Boost.Test and fmt, build with tests on, and run the
-    graphrel suites (about 6 s).
-  - The TeDDy core and reliability suites take about 14 minutes, so they stay out of per-push CI.
-  - A new job runs a Debug ASan/UBSan build with `UBSAN_OPTIONS=halt_on_error=1`, because UBSan
-    only *prints* errors by default.
-  - A manual `workflow_dispatch` trigger was added.
-  - Windows still only builds (no Boost on that runner).
-- **Verification.** Both Linux jobs were dry-run locally with the exact commands. The workflow has
-  **not yet run on GitHub**.
-- **Commit.** `542bf11`.
-
-### 3.15 Analysis findings
-
-- **Peak layer size vs Wu & Sun's Table 2.** Every R we could reproduce matches the paper exactly,
-  but the library kept more states per layer.
-  - We first suspected the state definition. Inspecting states and reading Carlier & Lucet /
-    Imai et al. ruled that out.
-  - It is the **ordering**. BFS from a corner sweeps diagonally across a mesh; sweeping row by
-    row along the short side (Carlier & Lucet's street-network numbering) gives N20 65,858 states
-    (1.22× the paper) against 387,481 (7.2×) with BFS.
-  - The maximum boundary size can't tell them apart: it is 11 for both.
-  - This led to 3.16.
-
-### 3.16 Cut-width ordering, now the default
-
-- **Seen.** Orderings with the same largest boundary size (F_max) gave very different state counts
-  (N20: 387,481 with BFS vs 65,858 with a row sweep; both F_max = 11). Exposing a mesh-only "row
-  sweep" wouldn't help general graphs.
-- **Hypothesis (from inspecting states).**
-  - In a row sweep each boundary vertex has **one** unprocessed edge. A non-terminal component
-    that touches the boundary once is then a dead end, and the existing pruning removes it, so
-    states merge.
-  - In BFS's diagonal sweep each boundary vertex has **two** unprocessed edges, so nothing is pruned.
-  - So the quantity that matters should be the **edge cut**: the number of unprocessed edges
-    leaving the processed part. That's 11 for the row sweep and 18 for BFS on 10×10.
-- **How it was tested** (`ordering_lab.cpp`).
-  - For BFS, DFS and several greedy variants, compute the cheap metrics (largest boundary,
-    largest cut, total cut) and the exact LBL peak layer size and total work.
-  - Cases: 12 meshes and 12 random geometric graphs, with perfect vertices and with p = 0.9.
-  - Each LBL run is a separate process with time and memory limits, so a blow-up gets recorded
-    instead of killing the experiment.
-- **Heuristic.**
-  - Greedy: repeatedly take the reached vertex that grows the cut least (deg − 2·processed
-    neighbours), preferring the most recently touched vertex (continue the current line).
-  - The free greedy can sweep along the *long* side of a rectangle, which is catastrophic (4×12:
-    705,376 states). So it also runs forced through each neighbour of the seed (up to 16).
-  - Plain BFS is always a candidate too.
-  - Pick the smallest (largest cut, largest boundary, total cut). The boundary tie-break matters:
-    on 8×8 two candidates tie on cut but differ 2× in states.
-- **Options for the default.**
-  1. Keep BFS.
-  2. Make cutwidth the default.
-  3. Choose per graph.
-  4. Race candidates with real LBL runs.
-- **Decision.** Option 2. `calculate_reliability`, `calculate_reliability_bounds` and
-  `build_diagram` use `ordering_strategy::cutwidth`. `generate_variable_ordering(g)` stays BFS for
-  compatibility, and BFS can be passed explicitly to reproduce Wu & Sun's setup. Why:
-  - The risk is lopsided. BFS's losses reach 24–96× or run out of memory; cutwidth's worst
-    measured loss is 2.2×.
-  - Answers are exact either way.
-  - Racing (option 4) would at least double the cost of every call.
-- **Result.** Exact LBL, all edges 0.9:
-
-  | Graph | Vertices 0.9: BFS | Vertices 0.9: cutwidth | Perfect vertices: BFS work | Perfect vertices: cutwidth work |
-  |---|---|---|---|---|
-  | 10×10 mesh (N20) | 387,481 states, 145 s | 65,858, 63 s | | |
-  | 8×8 mesh | 19,884, 3.7 s | 5,434, 2.0 s | 184,748 (0.7 s) | 406,609 (1.2 s) — **worse** |
-  | 7×7 mesh | 4,578 | 1,595 | 45,775 | 87,618 — **worse** |
-  | 6×10 mesh | 4,582 | 891 | 69,453 | 41,158 |
-  | geo40_1 | 162,075, 8.5 s | 1,683, 0.11 s | 450,595 | 19,296 |
-  | geo40_2 | out of memory (> 6 GB) | 8,758, 0.5 s | timeout | 74,926 |
-  | geo40_3 | out of memory | 70,342, 6.4 s | out of memory | 419,662 |
-  | geo40_4 | 329,038, 32 s | 478,760, 45 s — **worse** | 1,712,364 | 2,695,487 — **worse** |
-  | geo40_6 | 661,287, 36 s | 182,910, 7.4 s | 1,040,216 | 643,195 |
-  | geo60_1 | 1,329,800, 125 s | 54,528, 8.4 s | | |
-  | geo60_2 | 2,399,606, 294 s | 908,647, 129 s | | |
-
-  On the other cases measured, cutwidth was equal or better.
-
-  - BDD node counts: 7×7 with vertices at 0.9 goes from 108,702 to 76,522; the 2×500 ladder from
-    5,486 to 3,492; but 8×8 with perfect vertices goes from 84,885 to 180,574.
-  - The guard test checks that cutwidth halves G^max on 7×7 and sweeps a 4×12 mesh along its
-    short side. Fuzzing now covers BFS explicitly, since it's no longer the default.
-- **Known weak spot.** Square meshes with perfect vertices: the peak is the same, but the row sweep
-  holds it for more layers, so total work is up to 2.2× higher. The cut proxy doesn't see layer
-  *duration*. See §7.
-- **Commit.** `f4c3dc1`.
-- **Lesson 10.** A proxy metric must be validated across regimes. The cut proxy is excellent with
-  imperfect vertices and weaker with perfect ones. We only found that by measuring total work as
-  well as the peak.
-- **Imai Theorem 1 gap.** Imai's theorem identifies two minors by their partition *and* the same
-  remaining edge set. The library's key leaves out the edge set. Fuzzing found no counterexample,
-  but nothing proves it safe. Open.
-- **Hash-only state identity.** Two states could in principle collide on the 64-bit boundary hash.
-  Open; the frontier-local redesign removes it.
-
-### 3.17 Cleanup (no change in behaviour)
-
-- **Seen.** The audit (§3) listed dead and duplicated code:
-  - a duplicate `src/common/variable_ordering.hpp` that conflicted with the public header;
-  - three copies of each graph operation;
-  - unused helpers and the never-written log stream;
-  - documentation crediting the BDD builder to the wrong paper, and text mangled by a
-    "reliability" → "prob" search-and-replace;
-  - doc blocks inside function bodies;
-  - 15 compiler warnings.
-- **Decision.** One commit that changes no behaviour. It's verified the same way as the
-  performance work: BFS/DFS orderings byte-identical on 3,036 graphs; R, peak layer size and BDD
-  node counts unchanged on the benchmark set.
-  - The in-place graph operations are now the single implementation; the copying versions are
-    thin wrappers.
-  - `union_find::find` is iterative, with the same full path compression, so the parent arrays
-    are identical.
-  - `encode_k_bitset` is shared between LBL and BDD.
-- **Result.** No compiler warnings left in libgraphrel on GCC or Clang
-  (`-Wconversion -Wsign-conversion`). The BDD builder is credited to Hardy, Lucet & Limnios (2007).
-- **Correction to the audit (1.8).** `lbl_calculator` was never *copyable*: its `state_pool`
-  member deletes copying. It was *movable*, and a move would have left `boundary_` pointing at
-  the moved-from ordering. Since `e791a17`, `boundary_computer` doesn't keep the ordering at all,
-  and since `5df2a69` `lbl_calculator` is neither copyable nor movable.
-- **Commit.** `ad8200b`.
-
-### 3.18 `state_pool`: exception safety and real reuse
-
-- **Seen.**
-  - **Exception safety (audit 1.8).** A recycled state was destroyed and then rebuilt with
-    placement-new. If the rebuild threw, the node was in neither the live set nor the free list,
-    and the pool's destructor later destroyed it a second time.
-  - **Wasted pooling (audit 2.5).** The same pattern freed and re-allocated the state's four
-    vectors on every recycle, which is the expensive part the pool was meant to save.
-  - **Two smaller issues.** A leak if allocating a block's bookkeeping threw. And an extra-pool
-    size of 0 made `create()` write past an empty block.
-- **Options.**
-  1. Drop the pool and use plain `new`/`delete`.
-  2. Keep the pool, but overwrite recycled states by assignment.
-- **Decision.** Option 2. Copy-assignment reuses each vector's capacity, and if anything throws
-  the node is still a valid object on the free list. A fresh slot only counts as constructed after
-  its constructor returns. Block sizes are clamped to at least 1.
-- **Result.** Results and state counts unchanged. Best-of-5 timings are equal or faster: 7×7 −11%,
-  8×8 (vertices 0.9) −20%, 3×400 −19%, 6×40 unchanged. ASan/UBSan clean.
-- **Commit.** `8921856`.
-
----
-
-## 4. Results
-
-### Correctness: brute-force fuzzing, 10,000 graphs per mode
-
-| Mode | LBL before | BDD before | LBL after | BDD after |
+| Assumption | Wu & Sun | Carlier & Lucet | Imai et al. | Kawahara et al. |
 |---|---|---|---|---|
-| Paper assumptions | 0 | 0 | 0 | 0 |
-| + some p = 1 edges | 0 | 545 | 0 | 0 |
-| Anything, \|K\| ≥ 2 | 0 | 9 | 0 | 0 |
-| Anything, incl. \|K\| = 1 | 0 | 963 | 0 | 0 |
+| G connected | §2.1 (1) | §2 | §2.1 | §2.1 |
+| Independent two-state components | §2.1 (2–3) | §4.3 | §2.1 | §2.1 |
+| 2 ≤ \|K\| ≤ \|V\| | §2.1 | §2 | all-terminal | k = \|T\| |
+| Vertex before its incident edges ("vertex priority") | §2.3, Fig. 4 | vertex numbering | edges only | §3.1 |
+| Failed vertex ⇒ incident edges unusable | §2.3 | §5.2 | — | §3.1 (R_EV) |
 
-The CI test runs 1,500 graphs per mode, with DFS and random orderings as well.
+---
 
-### Performance (Release build, every output identical)
+## 3. Method
 
-| Case | Before | After |
+### 3.1 Oracle and differential fuzzing
+
+For graphs with V + E ≤ 16, we enumerate all 2^(V+E) component states. On each random graph
+(2–7 vertices, up to 9 edges) we compare:
+- `calculate_reliability` with the default ordering, BFS, DFS, and random orderings that respect
+  vertex priority;
+- `calculate_reliability` with fully random orderings, which must be rejected;
+- `build_diagram`.
+
+There are four modes:
+
+| Mode | Graphs generated |
+|---|---|
+| `PAPER` | Exactly the references' assumptions: connected simple graphs, 2 ≤ \|K\|, all p in (0, 1) |
+| `PAPER PERFECT` | As above, plus edges with p = 1 |
+| `KMIN2` | Anything (disconnected graphs, loops, multi-edges, p ∈ {0, 1}) with \|K\| ≥ 2 |
+| default | Anything, including \|K\| = 1 |
+
+The modes separate defects from out-of-scope inputs (§4).
+
+### 3.2 Targeted reproduction and profiling
+
+Each defect has a minimal reproducing graph. Scaling was measured on ladders, meshes, random
+geometric graphs and complete graphs, with callgrind profiles on a 7×7 mesh.
+
+### 3.3 Reference reproduction
+
+We reproduced Wu & Sun Table 2: the bridge (Fig. 1–3), N6–N9 (identified as meshes from |V| and
+|E|), N20–N26 and N27–N28. All edges and vertices have probability 0.9, and the two terminals are
+the most distant pair (opposite corners). Shared code was checked against Carlier & Lucet's
+Algorithms 1–2 over all 142,417 partitions with |F| ≤ 10.
+
+### 3.4 Behaviour-preservation protocol
+
+Any change meant to affect only cost had to reproduce these exactly, on fixed benchmark sets:
+- reliability values;
+- peak layer size G^max and largest front;
+- canonical BDD node counts;
+- generated orderings, byte for byte (3,036 graphs).
+
+### 3.5 Measurement protocol
+
+- Release builds (GCC 13, `-O2`).
+- Timings are best of 5 where differences were small.
+- Each long run is a separate process with time and memory limits, so a blow-up is recorded
+  rather than crashing the experiment.
+- Peak resident memory comes from `getrusage`.
+- Sanitizer builds (ASan + UBSan, halt on error) are run for every change.
+
+---
+
+## 4. Audit findings
+
+| # | Finding | Evidence | Root cause | Class |
+|---|---|---|---|---|
+| A1 | Test suite did not compile | build error | `decomp_state::union_find` renamed to `uf_`; CI never built tests | infrastructure |
+| A2 | BDD connected through failed vertices | 0.75 → 1.0 on a 3-vertex graph; 545/10,000 in `PAPER PERFECT` | p = 1 shortcut ran before the "edge removed by vertex failure" check; violates R_EV | **defect** |
+| A3 | \|K\| = 1 inconsistent | BDD 1.0 vs exact 0.3 | "connected" assumed for \|K\| < 2 | outside scope; undefined |
+| A4 | Unsorted terminals gave wrong answers | 0.855 vs 0.405 | `binary_search` on an unvalidated list | unenforced precondition |
+| A5 | Arbitrary custom orderings accepted | 0.81 / 0.0 vs 0.405 | vertex priority not checked (8,068/10,000 wrong) | unenforced precondition |
+| A6 | Probability cutoff 1e-15 | 1.2e-6 relative error in 1−R; K₁₂ silently lost ~97 % of its states | hidden approximation | **defect** (inexact) |
+| A7 | Parser accepted `O.9` as 0, trailing junk, negative counts; writer lost precision | repros | `operator>>` failure semantics; 15 digits | defect |
+| A8 | Validation after use; movable object with dangling reference; pool not exception-safe | review | member order; destroy + placement-new | defect (latent) |
+| A9 | Quadratic memory and time | 2×4000 ladder: 70 s, 2.76 GB | Stirling table sized V+E; per-level tables; whole-graph checks per state | performance |
+| A10 | Ordering helpers polynomially slow | 40×40: 73 s | full edge scans; O(L²E) estimator | performance |
+| A11 | State identity by 64-bit hash; partition numbers overflow beyond \|F\| = 25 | review | hash-only keys; B(26) > 2⁶⁴ | soundness risk |
+| A12 | More states per layer than Wu & Sun on meshes | N20: 387,481 vs 53,924 | ordering (§5.4) | performance |
+| A13 | Dead code, duplicated operations, wrong attribution, 15 warnings | review | — | quality |
+
+Within the references' assumptions (`PAPER`), both methods were already correct (0/10,000). Every
+correctness failure needed either an input outside those assumptions or a p = 1 edge.
+
+---
+
+## 5. Interventions
+
+Each intervention lists the alternatives considered and why the chosen one won. Commits are on
+`feat/libgraphrel-optimisations` (Appendix A).
+
+### 5.1 Correctness and preconditions (`a29ca5e`, `1ef297d`)
+
+- **A2.** Check for an edge removed by a vertex failure *before* the p = 1 shortcut. Rejected
+  alternatives: dropping the shortcut (it saves BDD variables), and pre-contracting p = 1 edges
+  (a larger change).
+- **A3.** Define R = p(t) for |K| = 1 on both paths, and reject |K| = 0. The existing test showed
+  |K| = 1 was meant to be supported. Rejecting it, as the references do, remains a one-line option.
+- **A4.** `validate()` now checks that terminals are sorted, unique and non-empty, rejects NaN,
+  and checks edge ids and that adjacency lists are complete. A new `set_terminals()` normalises the
+  list. Silently sorting a `const graph&` would have required a copy.
+- **A5.** Custom orderings must contain every variable exactly once and respect vertex priority,
+  checked in O(V+E). Fuzzing showed this, together with |K| ≥ 2, is the exact precondition:
+  BFS, DFS and random vertex-priority orderings all gave 0/10,000 mismatches.
+- **A6.** Exact by default. The cutoff becomes `calculate_reliability_bounds(g, threshold)`, which
+  adds up the probability it drops and returns an interval [lower, lower + dropped] guaranteed to
+  contain R. Rejected: keeping the cutoff (inexact with no bound), and exact-only (dense graphs
+  lose a large speed-up for no gain in practice).
+- **A7.** Tokenised strict parsing (`from_chars`, classic-locale reals, full token consumption),
+  and `max_digits10` output.
+- **A8.** Validate in constructor initialiser lists; delete copy and move operations.
+- **Tests and CI (`9771441`).** Brute-force fuzz, precondition, parser and paper suites (about
+  6 s); Linux GCC and Clang jobs that run them; an ASan/UBSan job with `halt_on_error`. The
+  sanitizer job exposed a harness defect: the header-only and shared Boost.Test were mixed, giving
+  two framework instances.
+
+### 5.2 Removing quadratic costs without changing results (`0a43644`)
+
+- Size the Stirling table by the largest static front, capped at 25, and throw beyond it rather
+  than overflow.
+- Replace the per-level boundary tables by two flat arrays.
+- Make the ordering helpers O(V+E).
+- Remove the whole-graph connectivity checks that are provably redundant: deleting a non-coloop
+  edge cannot disconnect the terminals, and contracting an edge never does (Imai et al. Lemma 1).
+  Debug builds assert the invariant.
+
+Verification: identical outputs (§3.4). Result: 2×2000 ladder 11.6 s / 693 MB → 2.3 s / 5 MB;
+ordering helpers on 100×100: more than 600 s → under 10 ms.
+
+### 5.3 Cleanup (`195280d`, `63bf4fb`)
+
+Dead code, the three copies of each graph operation, attribution (the BDD builder credited to
+Hardy et al.), and warnings (15 → 0). The `state_pool` now recycles states by assignment: this is
+exception-safe and reuses capacity, 11–20 % faster. Behaviour unchanged (§3.4).
+
+### 5.4 Cut-width ordering (`7a98b40`)
+
+**Observation.** On the 10×10 mesh, BFS and a row-by-row sweep have the same largest front
+(F = 11) but 387,481 vs 65,858 states.
+
+**Hypothesis.** With a row sweep, each front vertex keeps one unprocessed edge, so blocks touching
+the front once are dead ends (Lemma 2) and merge. With BFS's diagonal sweep each front vertex keeps
+two. The governing quantity should be the **edge cut**, the number of unprocessed edges leaving the
+processed part: 11 vs 18.
+
+**Heuristic.**
+- Greedily take the reached vertex that grows the cut least (deg − 2·processed neighbours),
+  preferring to continue the current line.
+- Run it from the seed terminal, freely and forced through each neighbour (up to 16). The forced
+  runs decide the sweep direction: the long side of a rectangle is catastrophic (4×12: 705,376
+  states).
+- Include BFS as a candidate.
+- Choose the smallest (largest cut, largest front, total cut).
+
+**Evaluation** (`ordering_lab.cpp`). 12 meshes and 12 random geometric graphs, with perfect and
+imperfect vertices. Measured on the previous engine:
+
+| Graph (vertices 0.9) | BFS states | Cut-width states |
 |---|---|---|
-| 2×2000 ladder, LBL | 11.6 s, 693 MB | 2.3 s, 5 MB |
-| 2×4000 ladder, LBL (audit) | 69.9 s, 2.76 GB | not re-run; memory now flat |
-| 6×40 mesh, LBL | 5.0 s | 3.0 s |
-| 2×500 ladder, BDD | 0.66 s, 100 MB | 0.21 s, 50 MB |
-| Ordering helpers, 30×30 | 12.1 s | < 0.01 s |
-| Ordering helpers, 100×100 | > 600 s (timed out) | < 0.01 s |
-| N20 (10×10, p = 0.9), exact LBL | — | 140 s, 1.0 GB (paper: 42.9 s) |
-| K₁₂, exact LBL | 104 s | 75.5 s, 1.2 GB |
-| K₁₂, `calculate_reliability_bounds(1e-15)` | — | 1.9 s, interval width < 1e-9 |
-| `state_pool` reuse (`8921856`), 8×8 mesh, vertices 0.9, best of 5 | 1.94 s | 1.55 s |
-| N20, default ordering (cutwidth, `f4c3dc1`) | 387,481 states, 145 s (BFS) | 65,858 states, 63 s |
-| geo40_1 (random geometric, 40 vertices) | 162,075 states, 8.5 s (BFS) | 1,683 states, 0.11 s |
+| 10×10 mesh (N20) | 387,481 | 65,858 |
+| 6×10 mesh | 4,582 | 891 |
+| geo40_1 | 162,075 | 1,683 |
+| geo40_2 | out of memory (> 6 GB) | 8,758 |
+| geo60_1 | 1,329,800 | 54,528 |
+| geo40_4 | 329,038 | 478,760 (**worse**) |
 
-### Reproducing Wu & Sun Table 2
+With perfect vertices, square meshes do up to 2.2× more total work, because the peak is the same
+but lasts longer. The edge cut does not capture how long a layer stays wide.
 
-R matches exactly for the bridge, N6, N7, N8, N9, N20 and N27. These are pinned in
-`graphrel_paper_test`; N20 is excluded there because it takes minutes.
+**Decision.** Make cut-width the default. BFS's failures reach 24–96× or run out of memory, while
+cut-width's worst case observed is 2.2×. BFS stays available to reproduce the paper's setup exactly.
 
-### Tests
+### 5.5 Frontier-local engine (`6c37164`, `7916203`, `b389dcb`)
 
-- 8 graphrel suites, about 6 s.
-- Clean under GCC, Clang and ASan/UBSan.
-- The existing TeDDy suites still pass.
+**Motivation.** The key already used only front information (Proposition 1), but each state
+*stored* a union-find over all V vertices and a list of all remaining edges. Every copy and check
+cost Θ(V+E), and the key needed a hash of the boundary vertex set (A11).
+
+**State.** Per front position, one byte: 0 = absent (failed or pruned), otherwise a block label,
+canonical by first appearance. Plus a 64-bit mask of terminal blocks. Size: 8 + F bytes. Keys are
+compared byte for byte, so no hash collision can merge two states, and there is no Bell-number
+ceiling. The front limit is 64, compared with 25 before.
+
+**Static plan**, computed once:
+- the front at each level;
+- for each edge, its endpoints' positions and whether each endpoint leaves afterwards;
+- remaining-edge counts;
+- unprocessed edges between front vertices;
+- terminals not yet reached;
+- a look-ahead table (below).
+
+**Transition** (Algorithm 1). Applying `ordering[l]` to a state:
+
+```
+vertex v:  works  -> v joins the front as a new block (terminal-marked if v ∈ K)
+           fails  -> v ∈ K ? FAILURE : v is absent (its edges become unusable)
+edge (u,v): if u or v absent, or same block  -> single child, state unchanged
+           works  -> merge the blocks of u and v
+           fails  -> unchanged
+then, for each child:
+  1. departures: an endpoint with no edges left leaves; a terminal block losing its last
+     front vertex is SUCCESS if it is the only terminal block and no terminal is
+     unreached, else FAILURE
+  2. usable exits: an edge to an absent front vertex is unusable; an edge inside a block
+     is internal. Until stable:
+       terminal block with no exits      -> SUCCESS / FAILURE as in 1
+       non-terminal block, <= 1 exit     -> absent                      (Lemma 2)
+       vertex with no exit               -> absent (its block keeps the others)
+  3. canonical relabelling
+  4. look-ahead (only on levels where the unprocessed graph is disconnected): FAILURE if
+     terminal blocks and unreached terminals cannot be joined through blocks and future
+     components
+  5. SUCCESS if all terminals are reached and lie in one block
+```
+
+**Two refinements, each motivated by measurement.**
+- *Usable exits (step 2).* The first version counted exits statically. With vertex failures it
+  kept 1.6× more states than the old engine (8×8: 8,866 vs 5,434). The cause: a front vertex
+  whose remaining edges all lead to failed vertices was still treated as live. Counting only
+  usable exits restored the old counts exactly. On 6×40 it also went *below* them (621 vs 801),
+  because internal edges are now recognised.
+- *Look-ahead (step 4).* On meshes it removed no states and cost 30 % in time. On geo60_1 it
+  removed 24 % at no time cost. It can only remove a state where the unprocessed graph is split
+  into several components, so the plan enables it only on those levels: no cost on meshes, and
+  the gain is kept.
+
+**BDD.** The same engine drives a two-pass construction. The forward pass records each state's
+successors, 16 bytes per state. The backward pass creates the TeDDy nodes from the last layer up.
+There is no recursion, so the stack-depth risk on MSVC is gone. Because a reduced, ordered BDD is
+canonical, node counts must be identical to the old builder's for the same ordering. They are, on
+every case checked (§6.2).
+
+**Removal.** The old engine and its unit tests were deleted (`b389dcb`). Two new tests cover what
+only the frontier engine can do: a front of 31 vertices (R = 1 − 0.5³⁰ exactly) and rejection of
+fronts above 64.
 
 ---
 
-## 5. What we learned
+## 6. Results
 
-1. **Know which reference governs which code before judging it.** See §1.
-2. **Two implementations agreeing is not a test oracle.** The old tests mostly checked
-   LBL == BDD, which passed while the BDD had real bugs. A brute-force oracle on graphs small
-   enough to enumerate found them within seconds. Keep it in CI.
-3. **Separate "bug" from "unenforced precondition".** Several failures came from inputs outside
-   the method's assumptions (|K| = 1, orderings that break vertex priority, unsorted terminals).
-   The fix is to enforce or define the precondition, not to patch the algorithm. Fuzz modes that
-   mirror the assumptions (`PAPER`, `KMIN2`, `any`) make the distinction measurable.
-4. **Hidden approximations corrupt measurements.** See 3.6. Two of the audit's own figures were wrong because of the cutoff.
-5. **Prove that refactors don't change outputs.** Every performance change was checked with
-   identical R, peak layer size, boundary size, BDD node counts, and byte-identical orderings.
-   That's what makes it safe to speed up research code.
-6. **Measure before explaining.** The peak-layer gap was first blamed on the state definition. An
-   experiment (ordering sweeps) showed it was the ordering. The maximum boundary size alone
-   doesn't predict state counts.
-7. **Unrun tests stop compiling.** See 3.1 and 3.14.
-8. **Sanitizers check the harness too.** See 3.9.
-9. **Keep mistakes in the record.** The first audit headline ("BDD wrong on 10 % of graphs")
-   mostly counted inputs outside both methods' scope, and the K₁₂ statement was wrong. Both are
-   corrected in the report rather than silently edited.
-10. **Validate a proxy metric across regimes.** See 3.16: the edge cut predicts state counts well
-    with imperfect vertices and less well with perfect ones. Measuring total work as well as the
-    peak exposed this.
+### 6.1 Correctness
+
+Brute-force fuzzing, 10,000 graphs per mode:
+
+| Mode | LBL, original | BDD, original | LBL, final | BDD, final |
+|---|---|---|---|---|
+| `PAPER` | 0 | 0 | 0 | 0 |
+| `PAPER PERFECT` | 0 | 545 | 0 | 0 |
+| `KMIN2` | 0 | 9 | 0 | 0 |
+| default (incl. \|K\| = 1) | 0 | 963 | 0 | 0 |
+
+In the final version, BFS, DFS and random vertex-priority orderings all give 0 mismatches, and
+every ordering that violates vertex priority is rejected. Sanitizer runs are clean throughout.
+
+### 6.2 Canonical BDD check
+
+| Case | Old builder: nodes, time, memory | Frontier builder: nodes, time, memory |
+|---|---|---|
+| 2×500 ladder | 3,492, 0.14 s, 49 MB | 3,492, 0.03 s, 40 MB |
+| 6×6 mesh, vertices 0.9 | 15,639, 0.05 s | 15,639, 0.01 s |
+| 7×7 mesh, vertices 0.9 | 76,522, 0.48 s, 23 MB | 76,522, 0.07 s, 11 MB |
+| 8×8 mesh | 180,574, 1.23 s, 57 MB | 180,574, 0.14 s, 15 MB |
+| 3×20 mesh, vertices 0.9 | 1,288 | 1,288 |
+| 5×12 mesh | 6,358 | 6,358 |
+
+### 6.3 Performance progression (LBL, exact)
+
+| Case | Audit baseline | After §5.2 | After §5.4 | Frontier (§5.5) |
+|---|---|---|---|---|
+| 2×2000 ladder | 17.9 s, 692 MB | 2.3 s, 5 MB | 1.5 s | < 0.01 s, 4 MB |
+| 6×40 mesh | 7.5 s (with cutoff) | 3.0 s | 1.3 s | 0.05 s (621 states) |
+| 8×8 mesh, vertices 0.9 | — | 3.7 s (BFS) | 1.66 s | 0.22 s, 4 MB |
+| 10×10 mesh (N20) | 200.8 s, 882 MB (BFS, with cutoff) | 145 s, 1.0 GB (BFS) | 63 s | **4.8 s, 11 MB** |
+| K₁₂ (N27) | 2.2 s with cutoff (inexact) | 75.5 s, 1.2 GB | 75.5 s | **8.7 s, 164 MB** |
+| geo40_4 | — | 32 s (BFS) | 45 s | 3.2 s |
+
+### 6.4 Reproducing Wu & Sun, Table 2
+
+All edges and vertices 0.9, terminals at maximum distance, exact computation. Wu & Sun's times
+are from an i5-7300 laptop; ours from one core of a cloud VM. "BFS" uses the paper's ordering;
+"cut-width" is the library default.
+
+| Net | Graph | Paper R | Our R | Paper B¹ | G^max, BFS | G^max, cut-width | Paper time | Our time (cut-width) | Our peak memory |
+|---|---|---|---|---|---|---|---|---|---|
+| — | bridge, Fig. 1 | 0.760078728 | 0.760078728 | 5 (Fig. 3) | 5 | — | — | < 0.01 s | 3 MB |
+| N9 | 2×20 mesh | 0.230160 | 0.230160 | 4 | 5 | 5 | 0.0 s | < 0.01 s | 3 MB |
+| N6 | 3×10 mesh | 0.609632 | 0.609632 | 12 | 19 | 15 | 0.0 s | < 0.01 s | 3 MB |
+| N7 | 3×12 mesh | 0.579399 | 0.579399 | 12 | 19 | 15 | 0.0 s | < 0.01 s | 3 MB |
+| N8 | 5×5 mesh | 0.711988 | 0.711988 | 118 | 253 | 146 | 0.0 s | < 0.01 s | 3 MB |
+| N20 | 10×10 mesh | 0.714299 | 0.714299 | 53,924 | 387,481 (10.4 s) | 65,858 | 42.9 s | 4.8 s | 11 MB |
+| N21 | 11×11 mesh | 0.714418 | 0.714418 | 191,216 | — | 233,206 | 215.1 s | 22.7 s | 26 MB |
+| N22 | 12×12 mesh | 0.714482 | 0.714482 | 684,114 | — | 833,340 | 1,003.4 s | 131.3 s | 97 MB |
+| N23 | 13×13 mesh | 0.714515 | running | 2,466,428 | — | running | 4,722.2 s | > 20 min | — |
+| N25 | 1000×10 mesh | 0.673028 | 0.673028 | 53,924 | — | 65,858 | 8,066.5 s (540 MB) | 663.5 s | **20 MB** |
+| N26 | 1200×10 mesh | 0.664961 | 0.664961 | 53,924 | — | 65,858 | 9,082.6 s (540 MB) | 787.4 s | **23 MB** |
+| N27 | K₁₂ | 0.810000 | 0.810000 | 816,465 | — | 1,459,298 | 72.9 s | 8.7 s | 164 MB |
+| N28 | K₁₃ | 0.810000 | 0.810000 | 5,460,095 | — | 9,388,752 | 555.8 s | 72.7 s | 1.0 GB |
+
+- Every R reproduced matches the paper to all published digits.
+- On meshes, cut-width stays within 1.2–1.25× of the paper's B¹ while BFS is up to 7.2× above it.
+- Memory is bounded by the widest layer only.
 
 ---
 
-## 6. Reproducing the evidence
+## 7. Discussion
+
+### 7.1 What explained the gaps to the paper
+
+The gaps were not in the state definition. They came from:
+1. **ordering** (§5.4);
+2. **the cutoff**, which made earlier counts look *better* than the paper's (K₁₂ appeared 19×
+   below it; exact, it is 1.8× above);
+3. **per-state overhead**, which the frontier engine removes.
+
+The remaining gap to the paper's B¹ is about 1.2× on meshes. Most likely it comes from tie-breaking
+in the authors' ordering, which the paper does not specify. On the complete graphs K₁₂ and K₁₃, where
+the ordering is irrelevant by symmetry, our layers are 1.7–1.8× wider, yet the runs are 8× faster. The
+paper's state definition may merge more aggressively on dense graphs; we did not investigate this
+further.
+
+### 7.2 Threats to validity
+
+- The brute-force oracle covers graphs with V + E ≤ 16. Larger graphs are covered only indirectly:
+  by agreement between independent methods and orderings, and by reproducing published values.
+- The look-ahead and usable-exit rules are proved informally (Proposition 1, Lemma 2). Their
+  soundness rests on those arguments and on the fuzzing.
+- The ordering heuristic was evaluated on meshes and random geometric graphs; other topologies may
+  behave differently. Cut-width loses on square meshes with perfect vertices.
+- Timing comparisons with the paper cross hardware generations.
+- The CI workflow has been dry-run locally but not yet executed on GitHub.
+- Hardy, Lucet & Limnios (2007) was not available. The BDD builder was checked against Carlier &
+  Lucet, Imai et al. and Kawahara et al., and against itself through canonical node counts.
+
+### 7.3 Lessons
+
+1. Establish which reference governs which code before judging it.
+2. Agreement between two implementations is not an oracle. The original tests compared LBL with
+   BDD and passed while the BDD was wrong.
+3. Separate defects from unenforced preconditions. Fuzzing modes that mirror the assumptions make
+   this measurable.
+4. Hidden approximations corrupt every measurement built on them, including the auditor's.
+5. Prove that refactors preserve outputs: identical orderings, layer sizes and canonical node
+   counts.
+6. Measure before explaining. The state-count gap was first attributed to the state definition;
+   it was the ordering.
+7. Validate proxy metrics across regimes. The edge cut predicts states well with imperfect
+   vertices, less well with perfect ones.
+8. Unrun tests stop compiling, and sanitizers check the harness as well as the code.
+9. Keep corrections in the record (Appendix D).
+
+---
+
+## 8. Conclusion and future work
+
+libgraphrel is now exact by default, enforces its preconditions, and runs both methods on a
+frontier-local engine. That engine has exact keys and O(F) work per state, and its memory is
+bounded by the widest layer (LBL) or by the diagram itself (BDD).
+
+Future work:
+- an ordering score that accounts for how long a layer stays wide (perfect-vertex meshes);
+- ordering the edges emitted with each vertex (5×5: 146 vs 208 states depending on edge ids);
+- why K₁₂'s layers are wider than the paper's;
+- turning `graph` into a class with private invariants (an API change);
+- reviewing the BDD builder against Hardy et al. (2007);
+- running the CI workflow on GitHub.
+
+---
+
+## References
+
+1. B. Wu, L. Sun. A novel layer-by-layer recursive decomposition algorithm for calculation of
+   network reliability. *Reliability Engineering & System Safety* 244 (2024) 109968.
+2. J. Carlier, C. Lucet. A decomposition algorithm for network reliability evaluation. *Discrete
+   Applied Mathematics* 65 (1996) 141–156.
+3. H. Imai, K. Sekine, K. Imai. Computational investigations of all-terminal network reliability
+   via BDDs. *IEICE Trans. Fundamentals* E82-A(5) (1999) 714–721.
+4. J. Kawahara, K. Sonoda, T. Inoue, S. Kasahara. Efficient construction of binary decision
+   diagrams for network reliability with imperfect vertices. *Reliability Engineering & System
+   Safety* 188 (2019) 142–154.
+5. G. Hardy, C. Lucet, N. Limnios. K-terminal network reliability measures with binary decision
+   diagrams. *IEEE Trans. Reliability* 56(3) (2007) 506–515.
+
+---
+
+## Appendix A. Commit map
+
+| Commit | Content |
+|---|---|
+| `bca017f` | Audit report, fuzz and probe harnesses |
+| `0f4e3be` | Audit: Wu & Sun preconditions, ordering experiments, Table 2 reproduction |
+| `2eb0e4e` | Audit: checks against Carlier & Lucet, Imai et al., Kawahara et al. |
+| `1ef297d` | Fix test suite compilation (A1) |
+| `a29ca5e` | Correctness and preconditions (A2–A8), exact LBL, bounds API, tests |
+| `9771441` | CI: graphrel tests on GCC and Clang, ASan/UBSan job |
+| `0a43644` | Remove quadratic costs, outputs identical (A9, A10) |
+| `e00cead` | Audit report status table |
+| `3940bcd` | First version of this log |
+| `7a98b40` | Cut-width ordering as default (A12) |
+| `24138b1` | Log: ordering work |
+| `195280d` | Cleanup (A13) |
+| `63bf4fb` | `state_pool` exception safety and reuse (A8) |
+| `dc32779` | Log: cleanup |
+| `6c37164` | Frontier engine; LBL on frontier states (A11) |
+| `7916203` | BDD built layer by layer on frontier states |
+| `b389dcb` | Remove the whole-graph engine |
+
+## Appendix B. Reproducing the evidence
 
 ```bash
-# Build and run every graphrel suite (needs libboost-test-dev and libfmt-dev)
+# Build and run all graphrel suites (needs libboost-test-dev, libfmt-dev)
 cmake --preset linux-release -DLIBTEDDY_BUILD_TESTS=ON
 cmake --build --preset linux-release
 ctest --test-dir build -R graphrel --output-on-failure
 ```
 
 ```bash
-# Sanitizer build, as in CI
+# Sanitizers
 cmake -S . -B build/asan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DLIBTEDDY_BUILD_TESTS=ON -DLIBTEDDY_BUILD_GRAPHREL=ON -DLIBTEDDY_USE_SANITIZERS=ON
 cmake --build build/asan --target graphrel-test
 UBSAN_OPTIONS=halt_on_error=1 ctest --test-dir build/asan -R graphrel --output-on-failure
 ```
 
 ```bash
-# Stand-alone harnesses in this folder (link against build/libgraphrel/libgraphrel.a)
+# Large brute-force fuzz (this folder; link against build/libgraphrel/libgraphrel.a)
 g++ -std=c++20 -O2 -I. -Ilibgraphrel/include -Ilibgraphrel/src libgraphrel/audit/fuzz.cpp build/libgraphrel/libgraphrel.a -o fuzz
 PAPER=1 ./fuzz 10000
 ```
 
+```bash
+# Wu & Sun Table 2 (this folder)
+g++ -std=c++20 -O2 -I. -Ilibgraphrel/include -Ilibgraphrel/src libgraphrel/audit/table2.cpp build/libgraphrel/libgraphrel.a -o table2
+./table2 mesh 10 10 cutwidth
+```
+
 | Harness | Purpose |
 |---|---|
-| `fuzz.cpp` | Brute force vs LBL/BDD and four kinds of ordering; modes `PAPER`, `PAPER PERFECT`, `KMIN2`, default |
-| `probe.cpp` | Minimal repros of the original findings, plus scaling runs |
-| `paper.cpp` | Wu & Sun Table 2 networks: R, peak layer size, boundary size, time, memory |
-| `order_sens.cpp` | How BFS/DFS tie-breaking affects the peak layer size |
-| `sweep.cpp` | BFS vs row sweep; `sweep numbering` checks Carlier & Lucet Algorithm 2 exhaustively |
-| `ordering_lab.cpp` | Ordering candidates: cheap metrics (cut, boundary) vs exact peak layer size and total work; `LAB_PV` sets vertex probability |
+| `fuzz.cpp` | Brute force vs LBL and BDD; orderings; modes `PAPER`, `PAPER PERFECT`, `KMIN2`, default |
+| `table2.cpp` | Wu & Sun Table 2 networks: R, G^max, front size, total work, time, memory |
+| `ordering_lab.cpp` | Ordering candidates: cheap metrics vs exact G^max and total work (`LAB_PV` sets vertex p) |
+| `sweep.cpp`, `order_sens.cpp`, `paper.cpp`, `probe.cpp` | Audit-time experiments (written against the original API) |
 
-Note: `probe.cpp`, `order_sens.cpp` and `paper.cpp` were written against the original API. Some
-of their inputs (unsorted terminals, invalid orderings) are now rejected by design. Since
-`f4c3dc1`, `lbl_calculator(g)` uses the cutwidth ordering, so `paper.cpp` reports cutwidth state
-counts. The BFS figures in this log came from BFS orderings.
+The audit report ([`README.md`](README.md)) documents the findings as found at `39fe87d`.
 
----
-
-## 7. Open items and next steps
-
-In recommended order. The [`README.md`](README.md) status table lists each finding's state.
-
-1. **Ordering heuristic: done** (3.16). Open refinements:
-   - capture layer duration, not just peak cut (perfect-vertex square meshes);
-   - order the edges within each vertex's emission (it changes G^max: 5×5 gives 146 vs 208
-     depending on edge-id order);
-   - optionally race the top two candidates with capped LBL runs.
-2. **Cleanup: done** (3.17, 3.18). Still open from audit §2–3:
-   - per-call allocations in `canonicalize_partition` and pruning (2.6);
-   - BDD recursion depth (2.7);
-   - `graph` as a class with private invariants (3.1). That is an API break, so it's best bundled
-     with item 3.
-3. **Frontier-local states (redesign).** Store only the boundary partition, K-marks and up/down
-   flags instead of the whole graph. That makes per-state cost O(F) instead of O(V+E), makes keys
-   exact (closing the Imai Theorem 1 gap and the hash-identity risk), and is the only route to the
-   paper's 1000×10 meshes (N25/N26) within 540 MB.
-4. **BDD builder.** Review against Hardy, Lucet & Limnios (2007) once available; build it layer by
-   layer to remove the recursion-depth risk on MSVC.
-5. **Housekeeping.** Run CI on GitHub once via the manual trigger.
-
----
-
-## Glossary
+## Appendix C. Glossary
 
 | Term | Meaning |
 |---|---|
-| K, terminals | Vertices that must all be up and connected |
-| LBL | Layer-by-layer decomposition (Wu & Sun 2024): process one variable per layer, merging equivalent states |
-| BS-BDD | Boundary-set based BDD (Hardy et al. 2007), built top-down with memoisation |
-| Boundary set F | Reached vertices that still have unprocessed edges (Imai's "elimination front") |
-| G^max | Largest number of states in any layer (Wu & Sun's B¹); drives memory and time |
-| Vertex priority | Every vertex appears before its incident edges in the ordering |
-| Coloop | Edge whose deletion disconnects the terminals; it must work |
-| Ghost edge | Edge already removed because an endpoint failed |
-| k-NR-IV, R_EV | k-terminal reliability with imperfect vertices; R_EV forces edges at failed vertices to 0 (Kawahara et al.) |
+| K | Terminal set; all terminals must work and be connected |
+| LBL | Layer-by-layer decomposition (Wu & Sun 2024) |
+| BS-BDD | Boundary-set BDD (Hardy et al. 2007) |
+| Front F | Processed vertices with unprocessed edges (boundary set, elimination front) |
+| G^max | Most states in one layer (Wu & Sun's B¹) |
+| Vertex priority | Each vertex precedes its incident edges in the ordering |
+| Edge cut | Unprocessed edges with exactly one processed endpoint |
+| Dead end | Non-terminal block with at most one usable exit (Lemma 2) |
+| k-NR-IV, R_EV | K-terminal reliability with imperfect vertices; failed vertices disable their edges (Kawahara et al.) |
+
+## Appendix D. Errata to earlier versions of the audit
+
+| Earlier statement | Correction |
+|---|---|
+| "The BDD is wrong on about 10 % of graphs" | Mostly inputs outside both methods' scope (\|K\| = 1). Within the assumptions plus p = 1 edges: 545/10,000. |
+| "K₁₂ is 19× below the paper thanks to coloop detection" | An artefact of the 1e-15 cutoff. Exactly, K₁₂ has 1,459,298 states, 1.8× the paper. |
+| "N20 has 340,599 states" | Measured with the cutoff. Exactly: 387,481 (BFS). |
+| "Row sweep brings N20 to 1.08× the paper" | Measured with the cutoff. Exactly: 65,858, 1.22×. |
+| "`lbl_calculator` can be copied" | It could be moved, not copied; the move had the dangling-reference problem. |
+| "The G^max gap needs the boundary definition from [20]/[33]" | Resolved: it was the ordering (§5.4). |
