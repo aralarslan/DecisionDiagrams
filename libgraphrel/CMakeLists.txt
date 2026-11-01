@@ -8,6 +8,7 @@ add_library(
         src/common/validation.cpp
         src/lbl/lbl_calculator.cpp
         src/frontier/frontier.cpp
+        src/frontier/layer_engine.cpp
         src/diagram/diagram.cpp
 )
 

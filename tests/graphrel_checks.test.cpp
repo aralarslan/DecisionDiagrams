@@ -17,6 +17,7 @@
 #include <boost/test/tools/floating_point_comparison.hpp>
 
 #include <teddy/graphrel/graphrel.hpp>
+#include "frontier/layer_engine.hpp"
 #include "lbl/lbl_detail.hpp"
 
 #include <algorithm>
@@ -266,6 +267,45 @@ BOOST_AUTO_TEST_CASE(fuzz_parallel_is_deterministic) {
         }
     }
     BOOST_TEST(wrong == 0);
+    BOOST_TEST(differs == 0);
+}
+
+// The engine's diagram links (child positions in the next layer) are the same
+// for every thread count: a one-state grain sends every layer through the
+// parallel path, including the link resolution after the order rebuild.
+BOOST_AUTO_TEST_CASE(engine_links_are_thread_independent) {
+    std::mt19937_64 rng(11);
+    int differs = 0;
+    auto run = [] (detail::frontier_plan const& plan, unsigned threads) {
+        detail::engine_options o;
+        o.threads = threads;
+        o.keep_all_branches = true;
+        o.block_size = 1;
+        o.min_parallel_layer = 1;
+        std::vector<std::vector<detail::state_links>> links;
+        detail::layer_engine(plan, o).run([] (std::size_t) { return 1.0; }, &links);
+        return links;
+    };
+    auto same = [] (auto const& a, auto const& b) {
+        if (a.size() != b.size()) return false;
+        for (std::size_t l = 0; l < a.size(); ++l) {
+            if (a[l].size() != b[l].size()) return false;
+            for (std::size_t i = 0; i < a[l].size(); ++i)
+                if (a[l][i].low != b[l][i].low || a[l][i].high != b[l][i].high) return false;
+        }
+        return true;
+    };
+    for (int it = 0; it < 300; ++it) {
+        const graph g = random_graph(rng, fuzz_mode::any_k2);
+        const auto ord = generate_variable_ordering(g);
+        const detail::frontier_plan plan(g, ord, g.all_vertices_perfect());
+        const auto serial = run(plan, 1);
+        for (unsigned threads : {2u, 3u, 4u})
+            differs += !same(serial, run(plan, threads));
+    }
+    const graph m = mesh(6, 6, 0.9);
+    const detail::frontier_plan plan(m, generate_variable_ordering(m), false);
+    differs += !same(run(plan, 1), run(plan, 4));
     BOOST_TEST(differs == 0);
 }
 

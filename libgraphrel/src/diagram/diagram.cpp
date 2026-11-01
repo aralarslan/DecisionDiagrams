@@ -20,6 +20,7 @@
 
 #include "common/validation.hpp"
 #include "frontier/frontier.hpp"
+#include "frontier/layer_engine.hpp"
 #include "teddy/graphrel/variable_ordering.hpp"
 
 namespace teddy::graphrel
@@ -91,11 +92,13 @@ public:
     diagram_builder(
         graph const& g,
         std::vector<variable> const& ordering,
-        teddy::bss_manager& mgr
+        teddy::bss_manager& mgr,
+        unsigned threads
     ) :
         net_(g),
         ordering_(ordering),
         mgr_(mgr),
+        threads_(threads),
         edge_to_var_(g.num_edges(), -1),
         vertex_to_var_(g.num_vertices(), -1),
         has_imperfect_(! g.all_vertices_perfect())
@@ -107,9 +110,11 @@ public:
     //  1. forward, layer by layer: expand every state and record where its
     //     two branches lead (a state of the next layer, or the 0/1 sink);
     //  2. backward: create the TeDDy nodes from the last layer up.
-    // Only the per-state links of all layers are kept (24 bytes per state);
+    // Only the per-state links of all layers are kept (8 bytes per state);
     // state keys are needed for two layers at a time. No recursion, so the
-    // depth of the diagram is not limited by the call stack.
+    // depth of the diagram is not limited by the call stack. The forward
+    // pass can use several threads; the backward pass calls TeDDy, which is
+    // single-threaded.
     bdd_t build ()
     {
         // |K| = 1: the function is just "that vertex works".
@@ -130,72 +135,33 @@ public:
         if (plan.levels() == 0)
             return mgr_.constant(0);
 
-        constexpr std::int64_t to_false = -1;
-        constexpr std::int64_t to_true  = -2;
-
-        struct links
-        {
-            std::int64_t low;
-            std::int64_t high;
-            bool single; ///< the variable does not matter here: no node
-        };
-
-        std::vector<std::vector<links>> layers(plan.levels());
-
-        detail::state_table current, next;
-        current.reset(plan.key_size(0), 1);
-        std::vector<std::uint8_t> const initial = plan.initial_key();
-        current.add(initial.data(), 0.0);
-        std::vector<std::uint8_t> low(detail::frontier_plan::max_key_size);
-        std::vector<std::uint8_t> high(low.size());
-
-        auto target
-            = [&] (detail::outcome o, std::vector<std::uint8_t> const& key)
-        {
-            if (o == detail::outcome::failure)
-                return to_false;
-            if (o == detail::outcome::success)
-                return to_true;
-            return static_cast<std::int64_t>(next.add(key.data(), 0.0));
-        };
-
-        for (std::size_t level = 0; level < plan.levels(); ++level)
-        {
-            next.reset(plan.key_size(level + 1), current.size());
-            std::vector<links>& out = layers[level];
-            out.resize(current.size());
-            for (std::size_t i = 0; i < current.size(); ++i)
-            {
-                detail::expansion const ex = plan.expand(
-                    level,
-                    current.key(i),
-                    low.data(),
-                    high.data()
-                );
-                links& k = out[i];
-                k.single = ex.single;
-                k.high   = target(ex.high, high);
-                k.low    = ex.single ? k.high : target(ex.low, low);
-            }
-            std::swap(current, next);
-        }
+        // Forward pass on the shared engine: all branches are kept (the
+        // structure must not depend on probabilities), and every state
+        // records where its two branches lead.
+        detail::engine_options options;
+        options.threads           = threads_;
+        options.keep_all_branches = true;
+        std::vector<std::vector<detail::state_links>> layers;
+        detail::layer_engine(plan, options)
+            .run([] (std::size_t) { return 1.0; }, &layers);
 
         std::vector<bdd_t> below, above;
         for (std::size_t level = plan.levels(); level-- > 0;)
         {
-            auto resolve = [&] (std::int64_t t)
+            auto resolve = [&] (std::uint32_t t)
             {
-                if (t == to_false)
+                if (t == detail::state_links::to_false)
                     return mgr_.constant(0);
-                if (t == to_true)
+                if (t == detail::state_links::to_true)
                     return mgr_.constant(1);
-                return below[static_cast<std::size_t>(t)];
+                return below[t];
             };
             above.clear();
             above.reserve(layers[level].size());
-            for (links const& k : layers[level])
+            for (detail::state_links const& k : layers[level])
             {
-                if (k.single)
+                // low == high: the variable does not matter here, no node.
+                if (k.low == k.high)
                     above.push_back(resolve(k.high));
                 else
                     above.push_back(mgr_.make_ite(
@@ -205,7 +171,8 @@ public:
                     ));
             }
             below.swap(above);
-            std::vector<links>().swap(layers[level]); // release this layer
+            // release this layer
+            std::vector<detail::state_links>().swap(layers[level]);
         }
         return below.front(); // layer 0 holds exactly the initial state
     }
@@ -257,6 +224,7 @@ private:
     graph const& net_;
     std::vector<variable> const& ordering_;
     teddy::bss_manager& mgr_;
+    unsigned threads_;
     std::vector<teddy::int32> edge_to_var_;
     std::vector<teddy::int32> vertex_to_var_;
     bool has_imperfect_;
@@ -275,7 +243,7 @@ reliability_diagram build_diagram (graph const& g, teddy::int64 pool_size)
     teddy::int32 var_count   = count_bdd_variables(ordering, has_imperfect);
 
     teddy::bss_manager mgr(var_count, pool_size);
-    diagram_builder builder(g, ordering, mgr);
+    diagram_builder builder(g, ordering, mgr, /*threads=*/1);
     bdd_t diagram = builder.build();
 
     // Build probs vector indexed by TeDDy variable
