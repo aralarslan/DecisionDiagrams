@@ -11,7 +11,8 @@
 #include <thread>
 #include <vector>
 
-namespace teddy::graphrel::detail {
+namespace teddy::graphrel::detail
+{
 
 /**
  * @brief A fixed group of threads that run one job at a time, together.
@@ -21,38 +22,53 @@ namespace teddy::graphrel::detail {
  * any call is rethrown by run(), after all calls have finished (they may
  * refer to the caller's stack).
  */
-class thread_team {
+class thread_team
+{
 public:
-    explicit thread_team(unsigned size) : size_(size == 0 ? 1 : size) {
-        try {
+    explicit thread_team(unsigned size) : size_(size == 0 ? 1 : size)
+    {
+        try
+        {
             for (unsigned t = 1; t < size_; ++t)
                 workers_.emplace_back([this, t] { work(t); });
-        } catch (...) {
+        }
+        catch (...)
+        {
             stop();
             throw;
         }
     }
 
-    ~thread_team() { stop(); }
+    ~thread_team()
+    {
+        stop();
+    }
 
-    thread_team(const thread_team&) = delete;
-    thread_team& operator=(const thread_team&) = delete;
+    thread_team(thread_team const&)             = delete;
+    thread_team& operator= (thread_team const&) = delete;
 
-    unsigned size() const { return size_; }
+    unsigned size () const
+    {
+        return size_;
+    }
 
-    void run(const std::function<void(unsigned)>& job) {
+    void run (std::function<void(unsigned)> const& job)
+    {
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            job_ = &job;
+            job_     = &job;
             pending_ = workers_.size();
-            error_ = nullptr;
+            error_   = nullptr;
             ++generation_;
         }
         start_.notify_all();
         std::exception_ptr own;
-        try {
+        try
+        {
             job(0);
-        } catch (...) {
+        }
+        catch (...)
+        {
             own = std::current_exception();
         }
         std::unique_lock<std::mutex> lock(mutex_);
@@ -65,27 +81,35 @@ public:
     }
 
 private:
-    void work(unsigned t) {
+    void work (unsigned t)
+    {
         std::size_t seen = 0;
-        for (;;) {
-            const std::function<void(unsigned)>* job = nullptr;
+        for (;;)
+        {
+            std::function<void(unsigned)> const* job = nullptr;
             {
                 std::unique_lock<std::mutex> lock(mutex_);
-                start_.wait(lock, [&] { return stopping_ || generation_ != seen; });
+                start_.wait(
+                    lock,
+                    [&] { return stopping_ || generation_ != seen; }
+                );
                 if (stopping_)
                     return;
                 seen = generation_;
-                job = job_;
+                job  = job_;
             }
             std::exception_ptr error;
-            try {
+            try
+            {
                 (*job)(t);
-            } catch (...) {
+            }
+            catch (...)
+            {
                 error = std::current_exception();
             }
             {
                 std::lock_guard<std::mutex> lock(mutex_);
-                if (error && !error_)
+                if (error && ! error_)
                     error_ = error;
                 --pending_;
             }
@@ -93,7 +117,8 @@ private:
         }
     }
 
-    void stop() {
+    void stop ()
+    {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             stopping_ = true;
@@ -108,10 +133,10 @@ private:
     std::vector<std::thread> workers_;
     std::mutex mutex_;
     std::condition_variable start_, done_;
-    const std::function<void(unsigned)>* job_ = nullptr;
-    std::size_t pending_ = 0;
-    std::size_t generation_ = 0;
-    bool stopping_ = false;
+    std::function<void(unsigned)> const* job_ = nullptr;
+    std::size_t pending_                      = 0;
+    std::size_t generation_                   = 0;
+    bool stopping_                            = false;
     std::exception_ptr error_;
 };
 

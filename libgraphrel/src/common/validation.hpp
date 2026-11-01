@@ -1,10 +1,10 @@
 #ifndef GRAPHREL_SRC_VALIDATION_HPP
 #define GRAPHREL_SRC_VALIDATION_HPP
 
+#include <vector>
+
 #include "teddy/graphrel/graph.hpp"
 #include "teddy/graphrel/variable_ordering.hpp"
-
-#include <vector>
 
 /**
  * @file validation.hpp
@@ -20,21 +20,25 @@
  *     ("vertex priority").
  */
 
-namespace teddy::graphrel::detail {
+namespace teddy::graphrel::detail
+{
 
 /// Returns nullptr if @p g can be analysed (it has a terminal set),
 /// otherwise a description of the problem.
-const char* find_graph_problem(const graph& g);
+char const* find_graph_problem (graph const& g);
 
-/// Throws std::invalid_argument("<who>: <problem>") unless @p g can be analysed.
-/// Returns @p g so it can be used in constructor initializer lists.
-const graph& require_valid(const graph& g, const char* who);
+/// Throws std::invalid_argument("<who>: <problem>") unless @p g can be
+/// analysed. Returns @p g so it can be used in constructor initializer lists.
+graph const& require_valid (graph const& g, char const* who);
 
 /// Throws std::invalid_argument unless @p ordering is a permutation of all
 /// vertex and edge variables of @p g that respects vertex priority.
 /// Returns @p ordering so it can be used in constructor initializer lists.
-const std::vector<variable>& require_valid_ordering(
-    const graph& g, const std::vector<variable>& ordering, const char* who);
+std::vector<variable> const& require_valid_ordering (
+    graph const& g,
+    std::vector<variable> const& ordering,
+    char const* who
+);
 
 } // namespace teddy::graphrel::detail
 

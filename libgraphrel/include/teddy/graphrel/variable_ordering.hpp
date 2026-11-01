@@ -1,25 +1,28 @@
 #ifndef TEDDY_GRAPHREL_VARIABLE_ORDERING_HPP
 #define TEDDY_GRAPHREL_VARIABLE_ORDERING_HPP
 
-#include "teddy/graphrel/graph.hpp"
-
 #include <cstddef>
 #include <vector>
+
+#include "teddy/graphrel/graph.hpp"
 
 /**
  * @file variable_ordering.hpp
  * @brief Variable ordering for the layer-by-layer decomposition (Wu & Sun 2024)
  *
  * Declares the variable/ordering types and the BFS/DFS ordering generators.
- * Include this header when you need a custom ordering for calculate_reliability().
+ * Include this header when you need a custom ordering for
+ * calculate_reliability().
  */
 
-namespace teddy::graphrel {
+namespace teddy::graphrel
+{
 
 /**
  * @brief Type of variable in the decomposition ordering
  */
-enum class variable_type {
+enum class variable_type
+{
     vertex, ///< Vertex variable (vertex reliability)
     edge    ///< Edge variable (edge reliability)
 };
@@ -27,16 +30,21 @@ enum class variable_type {
 /**
  * @brief A single variable in the decomposition ordering
  */
-struct variable {
+struct variable
+{
     variable_type type;
-    std::size_t   id;
-    variable(variable_type t, std::size_t i) : type(t), id(i) {}
+    std::size_t id;
+
+    variable(variable_type t, std::size_t i) : type(t), id(i)
+    {
+    }
 };
 
 /**
  * @brief Variable ordering strategy
  */
-enum class ordering_strategy {
+enum class ordering_strategy
+{
     /// Breadth-first from the first terminal, as in Wu & Sun (2024), Fig. 4.
     bfs,
     /// Depth-first from the first terminal. Correct, but can produce far more
@@ -60,8 +68,10 @@ enum class ordering_strategy {
  * @return Ordered list of variables.
  * @throws std::invalid_argument if @p g has no terminal set
  */
-std::vector<variable> generate_variable_ordering(
-    const graph& g, ordering_strategy strategy = ordering_strategy::cutwidth);
+std::vector<variable> generate_variable_ordering (
+    graph const& g,
+    ordering_strategy strategy = ordering_strategy::cutwidth
+);
 
 /**
  * @brief Estimate the maximum boundary set size for a given ordering.
@@ -70,8 +80,10 @@ std::vector<variable> generate_variable_ordering(
  * @param ordering Variable ordering to evaluate.
  * @return Maximum boundary set size F_max.
  */
-std::size_t estimate_max_boundary_size(const graph& g,
-                                        const std::vector<variable>& ordering);
+std::size_t estimate_max_boundary_size (
+    graph const& g,
+    std::vector<variable> const& ordering
+);
 
 } // namespace teddy::graphrel
 

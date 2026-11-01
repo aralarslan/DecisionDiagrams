@@ -12,10 +12,10 @@
  *   - calculate_reliability (LBL scalar path)
  */
 
-#include "teddy/graphrel/graph.hpp"
-#include "teddy/graphrel/variable_ordering.hpp"
 #include "teddy/graphrel/diagram.hpp"
+#include "teddy/graphrel/graph.hpp"
 #include "teddy/graphrel/graph_io.hpp"
 #include "teddy/graphrel/reliability.hpp"
+#include "teddy/graphrel/variable_ordering.hpp"
 
 #endif // TEDDY_GRAPHREL_GRAPHREL_HPP

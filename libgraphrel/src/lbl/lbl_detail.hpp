@@ -4,14 +4,15 @@
 #ifndef GRAPHREL_SRC_LBL_DETAIL_HPP
 #define GRAPHREL_SRC_LBL_DETAIL_HPP
 
+#include <cstddef>
+#include <vector>
+
 #include "frontier/frontier.hpp"
 #include "teddy/graphrel/graph.hpp"
 #include "teddy/graphrel/variable_ordering.hpp"
 
-#include <cstddef>
-#include <vector>
-
-namespace teddy::graphrel {
+namespace teddy::graphrel
+{
 
 /**
  * @brief Layer-by-layer reliability (Wu & Sun 2024) on frontier-local states.
@@ -26,42 +27,57 @@ namespace teddy::graphrel {
  * whatever the number of threads, and probabilities are summed in fixed
  * blocks, so the result is bit-identical for every thread count.
  */
-class lbl_calculator {
+class lbl_calculator
+{
 public:
     /// Uses ordering_strategy::cutwidth.
-    explicit lbl_calculator(const graph& g);
-    lbl_calculator(const graph& g, const std::vector<variable>& ordering);
+    explicit lbl_calculator(graph const& g);
+    lbl_calculator(graph const& g, std::vector<variable> const& ordering);
 
     // Holds a reference to the graph, so a temporary graph is refused (it
     // would dangle as soon as the constructor returns).
-    explicit lbl_calculator(graph&&) = delete;
-    lbl_calculator(graph&&, const std::vector<variable>&) = delete;
-    lbl_calculator(const lbl_calculator&) = delete;
-    lbl_calculator& operator=(const lbl_calculator&) = delete;
+    explicit lbl_calculator(graph&&)                      = delete;
+    lbl_calculator(graph&&, std::vector<variable> const&) = delete;
+    lbl_calculator(lbl_calculator const&)                 = delete;
+    lbl_calculator& operator= (lbl_calculator const&)     = delete;
 
-    double calculate();
+    double calculate ();
 
     /// Drop branches with probability <= @p threshold (0 = exact, the default).
-    void set_prune_threshold(double threshold) { prune_threshold_ = threshold; }
+    void set_prune_threshold (double threshold)
+    {
+        prune_threshold_ = threshold;
+    }
 
     /// Total probability of branches dropped by the last calculate() call.
-    double dropped_probability() const { return dropped_probability_; }
+    double dropped_probability () const
+    {
+        return dropped_probability_;
+    }
 
     /// Threads used to expand large layers (1 = serial, the default;
     /// 0 = std::thread::hardware_concurrency()). The result does not depend
     /// on it.
-    void set_threads(unsigned threads) { threads_ = threads; }
+    void set_threads (unsigned threads)
+    {
+        threads_ = threads;
+    }
 
     /// Testing hook: states per summation block, and the smallest layer that
     /// is expanded in parallel. Changing the block size can change the last
     /// bits of the result (it regroups floating-point sums).
-    void set_parallel_grain(std::size_t block_size, std::size_t min_parallel_layer) {
-        block_size_ = block_size == 0 ? 1 : block_size;
+    void set_parallel_grain (
+        std::size_t block_size,
+        std::size_t min_parallel_layer
+    )
+    {
+        block_size_         = block_size == 0 ? 1 : block_size;
         min_parallel_layer_ = min_parallel_layer;
     }
 
-    struct statistics {
-        std::size_t max_layer_size = 0;       ///< most states in one layer
+    struct statistics
+    {
+        std::size_t max_layer_size = 0; ///< most states in one layer
         /// Most states in one layer that the layer's variable splits into two
         /// children (it is neither forced nor irrelevant to them). This is
         /// Wu & Sun's G^max (B1 in their Table 2): their subgraphs no longer
@@ -69,21 +85,25 @@ public:
         /// through a layer uncounted.
         std::size_t max_branching_layer_size = 0;
         std::size_t total_decompositions = 0; ///< states summed over all layers
-        std::size_t max_boundary_size = 0;    ///< largest front
-        std::size_t num_layers = 0;
-        std::size_t peak_table_bytes = 0;     ///< largest memory of the two live layers
+        std::size_t max_boundary_size    = 0; ///< largest front
+        std::size_t num_layers           = 0;
+        std::size_t peak_table_bytes
+            = 0; ///< largest memory of the two live layers
     };
 
-    statistics get_statistics() const { return stats_; }
+    statistics get_statistics () const
+    {
+        return stats_;
+    }
 
 private:
-    const graph& net_;
+    graph const& net_;
     std::vector<variable> ordering_;
     statistics stats_;
-    double prune_threshold_ = 0.0;
-    double dropped_probability_ = 0.0;
-    unsigned threads_ = 1;
-    std::size_t block_size_ = 4096;
+    double prune_threshold_         = 0.0;
+    double dropped_probability_     = 0.0;
+    unsigned threads_               = 1;
+    std::size_t block_size_         = 4096;
     std::size_t min_parallel_layer_ = 16384;
 };
 

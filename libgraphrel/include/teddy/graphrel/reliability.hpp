@@ -12,7 +12,8 @@
  * Use build_diagram() instead when DPLD / importance / MCS analysis is needed.
  */
 
-namespace teddy::graphrel {
+namespace teddy::graphrel
+{
 
 /**
  * @brief Calculate network reliability using the layer-by-layer algorithm.
@@ -27,7 +28,7 @@ namespace teddy::graphrel {
  *                result is bit-identical for every thread count.
  * @return Probability that all terminals are connected.
  */
-double calculate_reliability(const graph& g, unsigned threads = 1);
+double calculate_reliability (graph const& g, unsigned threads = 1);
 
 /**
  * @brief Calculate network reliability with a custom variable ordering.
@@ -37,14 +38,17 @@ double calculate_reliability(const graph& g, unsigned threads = 1);
  * @param threads  As for calculate_reliability(const graph&, unsigned).
  * @return Probability that all terminals are connected.
  */
-double calculate_reliability(const graph& g,
-                             const std::vector<variable>& ordering,
-                             unsigned threads = 1);
+double calculate_reliability (
+    graph const& g,
+    std::vector<variable> const& ordering,
+    unsigned threads = 1
+);
 
 /**
  * @brief Interval guaranteed to contain the network reliability.
  */
-struct reliability_bounds {
+struct reliability_bounds
+{
     double lower; ///< probability of the explored states that connect K
     double upper; ///< lower + total probability of the pruned branches
 };
@@ -63,14 +67,18 @@ struct reliability_bounds {
  * @param threads As for calculate_reliability(const graph&, unsigned).
  * @throws std::invalid_argument for an invalid graph, ordering or threshold.
  */
-reliability_bounds calculate_reliability_bounds(const graph& g,
-                                                double prune_threshold,
-                                                unsigned threads = 1);
+reliability_bounds calculate_reliability_bounds (
+    graph const& g,
+    double prune_threshold,
+    unsigned threads = 1
+);
 
-reliability_bounds calculate_reliability_bounds(const graph& g,
-                                                const std::vector<variable>& ordering,
-                                                double prune_threshold,
-                                                unsigned threads = 1);
+reliability_bounds calculate_reliability_bounds (
+    graph const& g,
+    std::vector<variable> const& ordering,
+    double prune_threshold,
+    unsigned threads = 1
+);
 
 } // namespace teddy::graphrel
 
