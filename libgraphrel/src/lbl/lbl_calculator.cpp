@@ -74,16 +74,19 @@ double lbl_calculator::calculate() {
         const variable& var = ordering_[level];
         const double p = var.type == variable_type::edge ? net_.edges[var.id].prob
                                                          : net_.vertex_probs[var.id];
+        std::size_t branching = 0;
         for (std::size_t i = 0; i < current.size(); ++i) {
             const double parent = current.probability(i);
             const detail::expansion ex = plan.expand(level, current.key(i), low.data(), high.data());
             if (ex.single) {
                 route(ex.high, parent, high);
             } else {
+                ++branching;
                 route(ex.low, parent * (1.0 - p), low);
                 route(ex.high, parent * p, high);
             }
         }
+        stats_.max_branching_layer_size = std::max(stats_.max_branching_layer_size, branching);
         stats_.peak_table_bytes = std::max(stats_.peak_table_bytes,
                                            current.memory_bytes() + next.memory_bytes());
         std::swap(current, next);

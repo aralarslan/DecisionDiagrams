@@ -40,7 +40,13 @@ public:
     double dropped_probability() const { return dropped_probability_; }
 
     struct statistics {
-        std::size_t max_layer_size = 0;       ///< G^max: most states in one layer
+        std::size_t max_layer_size = 0;       ///< most states in one layer
+        /// Most states in one layer that the layer's variable splits into two
+        /// children (it is neither forced nor irrelevant to them). This is
+        /// Wu & Sun's G^max (B1 in their Table 2): their subgraphs no longer
+        /// contain a variable that cannot affect them, so such states pass
+        /// through a layer uncounted.
+        std::size_t max_branching_layer_size = 0;
         std::size_t total_decompositions = 0; ///< states summed over all layers
         std::size_t max_boundary_size = 0;    ///< largest front
         std::size_t num_layers = 0;

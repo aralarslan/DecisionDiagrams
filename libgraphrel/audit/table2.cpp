@@ -1,5 +1,9 @@
 // Wu & Sun (2024) Table 2 reproduction with the frontier engine.
-// usage: table2 mesh <rows> <cols> <bfs|cutwidth> | table2 complete <n> <bfs|cutwidth>
+// usage: table2 mesh <rows> <cols> <bfs|cutwidth|paper>
+//        table2 complete <n> <bfs|cutwidth|paper> [second terminal, default n-1]
+// "paper": vertices by id (row by row on these meshes), each vertex's edges by
+// id. B1 = states per layer that the layer's variable splits (the paper's
+// G^max); Gmax = all states per layer.
 #include "lbl/lbl_detail.hpp"
 #include <teddy/graphrel/graphrel.hpp>
 #include <chrono>
@@ -8,6 +12,21 @@
 #include <string>
 #include <sys/resource.h>
 using namespace teddy::graphrel;
+
+static std::vector<variable> by_id(const graph& g) {
+    std::vector<variable> ord;
+    std::vector<char> placed(g.num_vertices, 0), done(g.num_edges, 0);
+    for (std::size_t v = 0; v < g.num_vertices; ++v) {
+        ord.emplace_back(variable_type::vertex, v);
+        placed[v] = 1;
+        for (std::size_t e : g.adj[v]) {
+            const std::size_t o = g.edges[e].from == v ? g.edges[e].to : g.edges[e].from;
+            if (!done[e] && placed[o]) { done[e] = 1; ord.emplace_back(variable_type::edge, e); }
+        }
+    }
+    return ord;
+}
+
 int main(int argc, char** argv) {
     std::string kind = argv[1];
     graph g;
@@ -27,21 +46,24 @@ int main(int argc, char** argv) {
     } else {
         std::size_t n = std::strtoul(argv[2], nullptr, 10);
         strat = argv[3];
-        name = "K" + std::to_string(n);
+        const std::size_t t2 = argc > 4 ? std::strtoul(argv[4], nullptr, 10) : n - 1;
+        name = "K" + std::to_string(n) + " K={0," + std::to_string(t2) + "}";
         g = graph(n, n * (n - 1) / 2);
         for (std::size_t a = 0; a < n; ++a)
             for (std::size_t b = a + 1; b < n; ++b) g.add_edge(a, b, 0.9);
-        g.set_terminals({0, n - 1});
+        g.set_terminals({0, t2});
     }
     for (auto& p : g.vertex_probs) p = 0.9;
-    auto ord = generate_variable_ordering(g, strat == "bfs" ? ordering_strategy::bfs : ordering_strategy::cutwidth);
+    auto ord = strat == "paper" ? by_id(g)
+             : generate_variable_ordering(g, strat == "bfs" ? ordering_strategy::bfs : ordering_strategy::cutwidth);
     auto t0 = std::chrono::steady_clock::now();
     lbl_calculator calc(g, ord);
     double R = calc.calculate();
     double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     auto st = calc.get_statistics();
     rusage u{}; getrusage(RUSAGE_SELF, &u);
-    std::printf("%-14s %-8s V=%zu E=%zu L=%zu  R=%.6f  Gmax=%zu  F=%zu  work=%zu  time=%.1fs  peakRSS=%ldMB  tables=%.1fMB\n",
-                name.c_str(), strat.c_str(), g.num_vertices, g.num_edges, st.num_layers, R, st.max_layer_size,
-                st.max_boundary_size, st.total_decompositions, s, u.ru_maxrss / 1024, st.peak_table_bytes / 1048576.0);
+    std::printf("%-16s %-8s V=%zu E=%zu L=%zu  R=%.6f  B1=%zu  Gmax=%zu  F=%zu  work=%zu  time=%.1fs  peakRSS=%ldMB  tables=%.1fMB\n",
+                name.c_str(), strat.c_str(), g.num_vertices, g.num_edges, st.num_layers, R,
+                st.max_branching_layer_size, st.max_layer_size, st.max_boundary_size,
+                st.total_decompositions, s, u.ru_maxrss / 1024, st.peak_table_bytes / 1048576.0);
 }

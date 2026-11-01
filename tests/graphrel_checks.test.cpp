@@ -428,6 +428,42 @@ BOOST_AUTO_TEST_CASE(wu_sun_table2_meshes) {
     }
 }
 
+// Wu & Sun's G^max (B1 in Table 2) counts the subgraphs that still contain
+// the layer's variable, i.e. statistics::max_branching_layer_size. With the
+// paper's ordering on these meshes (row by row, each vertex's edges by id)
+// every published value is reproduced exactly. The larger rows match as well
+// (10x10: 53,924; 11x11: 191,216; 12x12: 684,114; K12 and K13 with the two
+// terminals first in the order: 816,465 and 5,460,095), but take seconds to
+// minutes; see libgraphrel/audit/HANDOFF.md §6.4.
+BOOST_AUTO_TEST_CASE(wu_sun_table2_layer_sizes) {
+    auto row_major = [](const graph& g) {
+        std::vector<variable> ord;
+        std::vector<char> placed(g.num_vertices, 0), done(g.num_edges, 0);
+        for (std::size_t v = 0; v < g.num_vertices; ++v) {
+            ord.emplace_back(variable_type::vertex, v);
+            placed[v] = 1;
+            for (std::size_t e : g.adj[v]) {
+                const std::size_t o = g.edges[e].from == v ? g.edges[e].to : g.edges[e].from;
+                if (!done[e] && placed[o]) {
+                    done[e] = 1;
+                    ord.emplace_back(variable_type::edge, e);
+                }
+            }
+        }
+        return ord;
+    };
+    struct row { std::size_t r, c, b1; };
+    for (row t : {row{20, 2, 4},      // N9
+                  row{10, 3, 12},     // N6
+                  row{12, 3, 12},     // N7
+                  row{5, 5, 118}}) {  // N8
+        const graph g = mesh(t.r, t.c, 0.9);
+        lbl_calculator calc(g, row_major(g));
+        calc.calculate();
+        BOOST_TEST(calc.get_statistics().max_branching_layer_size == t.b1);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(wu_sun_table2_complete_graph_k12) {
     // N27: complete graph on 12 vertices, R = 0.810000. The exact run takes
     // ~100 s and 1.2 GB (1.46 M states per layer), so this uses the pruned
