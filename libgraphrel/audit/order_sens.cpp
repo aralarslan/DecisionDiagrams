@@ -1,5 +1,4 @@
 // How much does BFS tie-breaking (edge insertion order / labelling) change G^max?
-#include "lbl/lbl_detail.hpp"
 #include <teddy/graphrel/graphrel.hpp>
 #include <algorithm>
 #include <cstdio>
@@ -25,11 +24,11 @@ int main(int argc, char** argv) {
         g.set_terminals({0, r * c - 1});
         for (auto strat : {ordering_strategy::bfs, ordering_strategy::dfs}) {
             auto ord = generate_variable_ordering(g, strat);
-            lbl_calculator calc(g, ord);
-            double R = calc.calculate();
-            auto st = calc.get_statistics();
+            const reliability_result res = analyze_reliability(g, {.ordering = ord});
+            double R = res.reliability;
+            auto st = res.statistics;
             if (strat == ordering_strategy::bfs) { best = std::min(best, st.max_layer_size); worst = std::max(worst, st.max_layer_size); }
-            if (t < 3) std::printf("trial %d %s: R=%.6f G^max=%zu Fmax=%zu\n", t, strat == ordering_strategy::bfs ? "bfs" : "dfs", R, st.max_layer_size, st.max_boundary_size);
+            if (t < 3) std::printf("trial %d %s: R=%.6f G^max=%zu Fmax=%zu\n", t, strat == ordering_strategy::bfs ? "bfs" : "dfs", R, st.max_layer_size, st.max_front_size);
         }
     }
     std::printf("%zux%zu BFS over %d edge orders: G^max min=%zu max=%zu\n", r, c, trials, best, worst);

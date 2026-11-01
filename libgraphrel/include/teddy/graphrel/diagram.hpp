@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "teddy/graphrel/graph.hpp"
+#include "teddy/graphrel/variable_ordering.hpp"
 
 /**
  * @file diagram.hpp
@@ -26,20 +27,40 @@ namespace teddy::graphrel
 struct reliability_diagram;
 
 /**
+ * @brief Settings of build_diagram().
+ */
+struct diagram_options
+{
+    /// Variable ordering. Empty (the default): generate_variable_ordering(g),
+    /// i.e. cut-width.
+    std::vector<variable> ordering;
+
+    /// Threads for the forward pass over the boundary states: 1 (the
+    /// default) runs serially, 0 uses std::thread::hardware_concurrency().
+    /// The diagram is the same for every thread count; the node creation
+    /// itself (TeDDy) is single-threaded.
+    unsigned threads = 1;
+
+    /// Initial TeDDy node pool size.
+    teddy::int64 pool_size = 100'000;
+};
+
+/**
  * @brief Build a BDD of the K-terminal structure function.
  *
- * Uses the boundary-set BDD algorithm (Hardy, Lucet & Limnios 2007) with
- * the cut-width variable ordering (ordering_strategy::cutwidth). Returns a
- * reliability_diagram owning the manager.
+ * Uses the boundary-set BDD algorithm (Hardy, Lucet & Limnios 2007). Returns
+ * a reliability_diagram owning the manager.
  *
- * @param g         Graph with edge/vertex reliabilities and terminal set.
- * @param pool_size Initial TeDDy node pool size (default 100 000).
- * @return          Populated reliability_diagram ready for analysis.
- * @throws std::invalid_argument if @p g has no terminal set
+ * @param g       Graph with edge/vertex reliabilities and terminal set.
+ * @param options Ordering, threads and pool size (see diagram_options).
+ * @return        Populated reliability_diagram ready for analysis.
+ * @throws std::invalid_argument if @p g has no terminal set, or the ordering
+ *         is not a permutation of all variables with every vertex before its
+ *         edges
  */
 reliability_diagram build_diagram (
     graph const& g,
-    teddy::int64 pool_size = 100'000
+    diagram_options const& options = {}
 );
 
 /**
@@ -90,7 +111,7 @@ struct reliability_diagram
 private:
     friend reliability_diagram build_diagram (
         graph const& g,
-        teddy::int64 pool_size
+        diagram_options const& options
     );
 
     // Only build_diagram() creates diagrams: the variable maps must match the

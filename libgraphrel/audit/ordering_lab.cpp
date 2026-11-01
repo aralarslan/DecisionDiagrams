@@ -3,7 +3,6 @@
 //   ordering_lab list                          metrics of every candidate, selection marked
 //   ordering_lab run <case> <cand|selected>    exact LBL for one candidate (G^max, total work)
 // LAB_PV=<p> sets every vertex probability (default 0.9; 1.0 = perfect vertices).
-#include "lbl/lbl_detail.hpp"
 #include <teddy/graphrel/graphrel.hpp>
 #include <algorithm>
 #include <chrono>
@@ -136,11 +135,10 @@ static std::size_t gmax(graph g, const std::vector<variable>& ord, double& secs)
     const double pv = std::getenv("LAB_PV") ? std::atof(std::getenv("LAB_PV")) : 0.9;
     g.set_all_vertex_probs(pv);
     auto t0 = std::chrono::steady_clock::now();
-    lbl_calculator calc(g, ord);
-    calc.calculate();
+    const reliability_result res = analyze_reliability(g, {.ordering = ord});
     secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    total_work = calc.get_statistics().total_decompositions;
-    return calc.get_statistics().max_layer_size;
+    total_work = res.statistics.total_states;
+    return res.statistics.max_layer_size;
 }
 
 // usage: order_lab list                 -> metrics for every (case, candidate), plus selection

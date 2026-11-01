@@ -1,5 +1,4 @@
 // Per-level front size, edge cut and layer size, for the ordering model.
-#include "lbl/lbl_detail.hpp"
 #include "frontier/frontier.hpp"
 #include <teddy/graphrel/graphrel.hpp>
 #include <algorithm>

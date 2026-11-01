@@ -188,6 +188,21 @@ graph complete(std::size_t n, double p) {
 
 constexpr double exact_tol = 1e-9;
 
+/// Layer-by-layer run with explicit settings (empty ordering = default).
+reliability_result run_lbl(const graph& g, std::vector<variable> ordering = {},
+                           unsigned threads = 1, double prune_threshold = 0.0,
+                           detail::parallel_grain grain = {}) {
+    reliability_options options;
+    options.ordering = std::move(ordering);
+    options.threads = threads;
+    options.prune_threshold = prune_threshold;
+    return detail::analyze_reliability(g, options, grain);
+}
+
+double reliability_with(const graph& g, std::vector<variable> ordering) {
+    return run_lbl(g, std::move(ordering)).reliability;
+}
+
 } // namespace
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -206,11 +221,11 @@ void run_fuzz(fuzz_mode mode, int iterations, std::uint64_t seed) {
 
         const double lbl = calculate_reliability(g);  // default: cutwidth ordering
         const double bdd = bdd_reliability(g);
-        const double bfs = calculate_reliability(
+        const double bfs = reliability_with(
             g, generate_variable_ordering(g, ordering_strategy::bfs));
-        const double dfs = calculate_reliability(
+        const double dfs = reliability_with(
             g, generate_variable_ordering(g, ordering_strategy::dfs));
-        const double rnd = calculate_reliability(g, random_vertex_priority_ordering(g, rng));
+        const double rnd = reliability_with(g, random_vertex_priority_ordering(g, rng));
 
         lbl_bad += off(lbl);
         bdd_bad += off(bdd);
@@ -250,16 +265,13 @@ BOOST_AUTO_TEST_CASE(fuzz_parallel_is_deterministic) {
         for (double threshold : {0.0, 0.01}) {
             double serial = 0.0, serial_dropped = 0.0;
             for (unsigned threads : {1u, 2u, 3u, 4u}) {
-                lbl_calculator calc(g);
-                calc.set_parallel_grain(1, 1);
-                calc.set_prune_threshold(threshold);
-                calc.set_threads(threads);
-                const double r = calc.calculate();
+                const reliability_result res = run_lbl(g, {}, threads, threshold, {1, 1});
+                const double r = res.reliability;
                 if (threads == 1) {
                     serial = r;
-                    serial_dropped = calc.dropped_probability();
+                    serial_dropped = res.upper_bound;
                 } else {
-                    differs += r != serial || calc.dropped_probability() != serial_dropped;
+                    differs += r != serial || res.upper_bound != serial_dropped;
                 }
                 if (threshold == 0.0)
                     wrong += std::fabs(r - exact) > exact_tol;
@@ -317,23 +329,33 @@ BOOST_AUTO_TEST_CASE(parallel_large_layers_are_deterministic) {
             double serial = 0.0;
             std::size_t serial_states = 0;
             for (unsigned threads : {1u, 2u, 4u}) {
-                lbl_calculator calc(g);
-                if (block != 4096)
-                    calc.set_parallel_grain(block, 1);
-                calc.set_threads(threads);
-                const double r = calc.calculate();
+                const detail::parallel_grain grain =
+                    block != 4096 ? detail::parallel_grain{block, 1} : detail::parallel_grain{};
+                const reliability_result res = run_lbl(g, {}, threads, 0.0, grain);
+                const double r = res.reliability;
                 if (threads == 1) {
                     serial = r;
-                    serial_states = calc.get_statistics().total_decompositions;
+                    serial_states = res.statistics.total_states;
                 } else {
                     BOOST_TEST(r == serial); // bit-identical
-                    BOOST_TEST(calc.get_statistics().total_decompositions == serial_states);
+                    BOOST_TEST(res.statistics.total_states == serial_states);
                 }
             }
         }
     }
     const graph k10 = complete(10, 0.9);
-    BOOST_TEST(calculate_reliability(k10, 0) == calculate_reliability(k10, 1));
+    BOOST_TEST(run_lbl(k10, {}, 0).reliability == calculate_reliability(k10));
+
+    // The diagram does not depend on the threads of its forward pass.
+    for (const graph& g : {mesh(6, 6, 0.9), complete(8, 0.9)}) {
+        diagram_options serial, parallel;
+        parallel.threads = 4;
+        reliability_diagram a = build_diagram(g, serial);
+        reliability_diagram b = build_diagram(g, parallel);
+        BOOST_TEST(a.manager.get_node_count(a.diagram) == b.manager.get_node_count(b.diagram));
+        BOOST_TEST(a.manager.calculate_probability(a.probs, a.diagram) ==
+                   b.manager.calculate_probability(b.probs, b.diagram));
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -365,13 +387,14 @@ BOOST_AUTO_TEST_CASE(single_terminal_is_its_own_reliability) {
     // Any valid ordering, even one that does not start at the terminal.
     std::vector<variable> ord{{variable_type::vertex, 1}, {variable_type::vertex, 0},
                               {variable_type::edge, 0}};
-    BOOST_TEST(calculate_reliability(g, ord) == 0.3, boost::test_tools::tolerance(1e-12));
+    BOOST_TEST(reliability_with(g, ord) == 0.3, boost::test_tools::tolerance(1e-12));
 }
 
-// lbl_calculator keeps a reference to its graph: a temporary must not bind.
-static_assert(!std::is_constructible_v<lbl_calculator, graph&&>);
-static_assert(!std::is_constructible_v<lbl_calculator, graph&&, const std::vector<variable>&>);
-static_assert(std::is_constructible_v<lbl_calculator, const graph&>);
+// The layer engine keeps a reference to its plan: a temporary must not bind.
+static_assert(!std::is_constructible_v<detail::layer_engine, detail::frontier_plan&&,
+                                       const detail::engine_options&>);
+static_assert(std::is_constructible_v<detail::layer_engine, const detail::frontier_plan&,
+                                      const detail::engine_options&>);
 
 BOOST_AUTO_TEST_CASE(diagram_accessors_are_checked) {
     graph g(2, 1);
@@ -495,14 +518,14 @@ BOOST_AUTO_TEST_CASE(invalid_orderings_rejected) {
                                     {vt::edge, 0}, {vt::edge, 1}};
     std::vector<variable> out_of_range{{vt::vertex, 0}, {vt::vertex, 1}, {vt::vertex, 7},
                                        {vt::edge, 0}, {vt::edge, 1}};
-    BOOST_CHECK_THROW(calculate_reliability(g, edges_first), std::invalid_argument);
-    BOOST_CHECK_THROW(calculate_reliability(g, missing), std::invalid_argument);
-    BOOST_CHECK_THROW(calculate_reliability(g, duplicate), std::invalid_argument);
-    BOOST_CHECK_THROW(calculate_reliability(g, out_of_range), std::invalid_argument);
+    BOOST_CHECK_THROW(reliability_with(g, edges_first), std::invalid_argument);
+    BOOST_CHECK_THROW(reliability_with(g, missing), std::invalid_argument);
+    BOOST_CHECK_THROW(reliability_with(g, duplicate), std::invalid_argument);
+    BOOST_CHECK_THROW(reliability_with(g, out_of_range), std::invalid_argument);
 
     std::vector<variable> ok{{vt::vertex, 2}, {vt::vertex, 1}, {vt::edge, 1},
                              {vt::vertex, 0}, {vt::edge, 0}};
-    BOOST_TEST(calculate_reliability(g, ok) == 0.405, boost::test_tools::tolerance(1e-12));
+    BOOST_TEST(reliability_with(g, ok) == 0.405, boost::test_tools::tolerance(1e-12));
 }
 
 BOOST_AUTO_TEST_CASE(small_unreliability_is_exact) {
@@ -626,9 +649,7 @@ BOOST_AUTO_TEST_CASE(wu_sun_table2_layer_sizes) {
                   row{12, 3, 12},     // N7
                   row{5, 5, 118}}) {  // N8
         const graph g = mesh(t.r, t.c, 0.9);
-        lbl_calculator calc(g, row_major(g));
-        calc.calculate();
-        BOOST_TEST(calc.get_statistics().max_branching_layer_size == t.b1);
+        BOOST_TEST(run_lbl(g, row_major(g)).statistics.max_branching_layer_size == t.b1);
     }
 }
 
@@ -638,10 +659,10 @@ BOOST_AUTO_TEST_CASE(wu_sun_table2_complete_graph_k12) {
     // variant and checks that its rigorous interval is tight and contains the
     // published value.
     const graph g = complete(12, 0.9);
-    const reliability_bounds r = calculate_reliability_bounds(g, 1e-15);
-    BOOST_TEST(r.lower <= r.upper);
-    BOOST_TEST(r.upper - r.lower < 1e-9);
-    BOOST_TEST(r.lower == 0.81, boost::test_tools::tolerance(1e-6));
+    const reliability_result r = run_lbl(g, {}, 1, 1e-15);
+    BOOST_TEST(r.reliability <= r.upper_bound);
+    BOOST_TEST(r.upper_bound - r.reliability < 1e-9);
+    BOOST_TEST(r.reliability == 0.81, boost::test_tools::tolerance(1e-6));
 }
 
 BOOST_AUTO_TEST_CASE(pruned_bounds_contain_exact_value) {
@@ -649,38 +670,35 @@ BOOST_AUTO_TEST_CASE(pruned_bounds_contain_exact_value) {
     for (int it = 0; it < 300; ++it) {
         const graph g = random_graph(rng, fuzz_mode::any_k2);
         const double exact = brute_force(g);
-        const reliability_bounds b0 = calculate_reliability_bounds(g, 0.0);
-        BOOST_TEST(b0.lower == exact, boost::test_tools::tolerance(exact_tol));
-        BOOST_TEST(b0.upper == b0.lower);
-        const reliability_bounds b = calculate_reliability_bounds(g, 0.05);  // aggressive
-        BOOST_TEST(b.lower <= exact + exact_tol);
-        BOOST_TEST(b.upper >= exact - exact_tol);
+        const reliability_result b0 = run_lbl(g, {}, 1, 0.0);
+        BOOST_TEST(b0.reliability == exact, boost::test_tools::tolerance(exact_tol));
+        BOOST_TEST(b0.exact());
+        const reliability_result b = run_lbl(g, {}, 1, 0.05);  // aggressive
+        BOOST_TEST(b.reliability <= exact + exact_tol);
+        BOOST_TEST(b.upper_bound >= exact - exact_tol);
     }
     graph g(2, 1);
     g.add_edge(0, 1, 0.5);
     g.set_terminals({0, 1});
-    BOOST_CHECK_THROW(calculate_reliability_bounds(g, -1.0), std::invalid_argument);
-    BOOST_CHECK_THROW(calculate_reliability_bounds(g, std::nan("")), std::invalid_argument);
+    BOOST_CHECK_THROW(run_lbl(g, {}, 1, -1.0), std::invalid_argument);
+    BOOST_CHECK_THROW(run_lbl(g, {}, 1, std::nan("")), std::invalid_argument);
+    BOOST_CHECK_THROW(run_lbl(g, {}, 1, 1.0), std::invalid_argument);
 }
 
 // The default (cutwidth) ordering must beat BFS on meshes: same result, far
 // fewer states per layer. 7x7 mesh, p = 0.9: BFS 4,578 vs cutwidth 1,595.
 BOOST_AUTO_TEST_CASE(cutwidth_ordering_reduces_layer_size) {
     const graph g = mesh(7, 7, 0.9);
-    lbl_calculator by_bfs(g, generate_variable_ordering(g, ordering_strategy::bfs));
-    lbl_calculator by_default(g);
-    const double r_bfs = by_bfs.calculate();
-    const double r_default = by_default.calculate();
-    BOOST_TEST(r_bfs == r_default, boost::test_tools::tolerance(1e-12));
-    BOOST_TEST(by_default.get_statistics().max_layer_size * 2 <
-               by_bfs.get_statistics().max_layer_size);
+    const reliability_result by_bfs =
+        run_lbl(g, generate_variable_ordering(g, ordering_strategy::bfs));
+    const reliability_result by_default = run_lbl(g);
+    BOOST_TEST(by_bfs.reliability == by_default.reliability, boost::test_tools::tolerance(1e-12));
+    BOOST_TEST(by_default.statistics.max_layer_size * 2 < by_bfs.statistics.max_layer_size);
 
     // Rectangular mesh: the sweep must go along the short side.
     const graph wide = mesh(4, 12, 0.9);
-    lbl_calculator wide_default(wide);
-    wide_default.calculate();
     // (Short-side sweep: boundary <= 6; a long-side sweep would reach 13.)
-    BOOST_TEST(wide_default.get_statistics().max_boundary_size <= 6u);
+    BOOST_TEST(run_lbl(wide).statistics.max_front_size <= 6u);
 }
 
 // With perfect vertices the cut-width ordering picks by estimated total work:
@@ -690,13 +708,12 @@ BOOST_AUTO_TEST_CASE(cutwidth_ordering_reduces_layer_size) {
 BOOST_AUTO_TEST_CASE(cutwidth_ordering_perfect_vertices_minimises_work) {
     graph g = mesh(7, 7, 0.9);
     g.set_all_vertex_probs(1.0);
-    lbl_calculator by_bfs(g, generate_variable_ordering(g, ordering_strategy::bfs));
-    lbl_calculator by_default(g);
-    BOOST_TEST(by_bfs.calculate() == by_default.calculate(), boost::test_tools::tolerance(1e-12));
-    BOOST_TEST(by_default.get_statistics().max_layer_size <=
-               by_bfs.get_statistics().max_layer_size);
-    BOOST_TEST(by_default.get_statistics().total_decompositions <=
-               by_bfs.get_statistics().total_decompositions);
+    const reliability_result by_bfs =
+        run_lbl(g, generate_variable_ordering(g, ordering_strategy::bfs));
+    const reliability_result by_default = run_lbl(g);
+    BOOST_TEST(by_bfs.reliability == by_default.reliability, boost::test_tools::tolerance(1e-12));
+    BOOST_TEST(by_default.statistics.max_layer_size <= by_bfs.statistics.max_layer_size);
+    BOOST_TEST(by_default.statistics.total_states <= by_bfs.statistics.total_states);
 }
 
 // On a complete graph every vertex order is equivalent, so the cut-width
@@ -705,13 +722,11 @@ BOOST_AUTO_TEST_CASE(cutwidth_ordering_perfect_vertices_minimises_work) {
 // K9, p = 0.9: 7,968 states per layer by id, 6,552 departing-first.
 BOOST_AUTO_TEST_CASE(cutwidth_edge_order_reduces_layer_size) {
     const graph g = complete(9, 0.9);
-    lbl_calculator by_bfs(g, generate_variable_ordering(g, ordering_strategy::bfs));
-    lbl_calculator by_default(g);
-    const double r_bfs = by_bfs.calculate();
-    const double r_default = by_default.calculate();
-    BOOST_TEST(r_bfs == r_default, boost::test_tools::tolerance(1e-12));
-    BOOST_TEST(by_default.get_statistics().max_layer_size <
-               by_bfs.get_statistics().max_layer_size);
+    const reliability_result by_bfs =
+        run_lbl(g, generate_variable_ordering(g, ordering_strategy::bfs));
+    const reliability_result by_default = run_lbl(g);
+    BOOST_TEST(by_bfs.reliability == by_default.reliability, boost::test_tools::tolerance(1e-12));
+    BOOST_TEST(by_default.statistics.max_layer_size < by_bfs.statistics.max_layer_size);
 }
 
 // Frontier-local states have no Bell-number limit: a front of 31 vertices is
@@ -734,11 +749,10 @@ BOOST_AUTO_TEST_CASE(frontier_handles_large_fronts) {
     ord.emplace_back(vt::vertex, t);
     for (std::size_t i = 1; i <= m; ++i) ord.emplace_back(vt::edge, m + i - 1);
 
-    lbl_calculator calc(g, ord);
-    const double r = calc.calculate();
-    BOOST_TEST(r == 1.0 - std::pow(0.5, 30), boost::test_tools::tolerance(1e-15));
-    BOOST_TEST(calc.get_statistics().max_boundary_size == 31u);
-    BOOST_TEST(calc.get_statistics().max_layer_size <= 2u);
+    const reliability_result r = run_lbl(g, ord);
+    BOOST_TEST(r.reliability == 1.0 - std::pow(0.5, 30), boost::test_tools::tolerance(1e-15));
+    BOOST_TEST(r.statistics.max_front_size == 31u);
+    BOOST_TEST(r.statistics.max_layer_size <= 2u);
 }
 
 // Fronts above frontier_plan::max_front (64) are rejected with a clear error.
@@ -756,7 +770,7 @@ BOOST_AUTO_TEST_CASE(frontier_rejects_oversized_fronts) {
     }
     ord.emplace_back(vt::vertex, m + 1);
     for (std::size_t i = 1; i <= m; ++i) ord.emplace_back(vt::edge, m + i - 1);
-    BOOST_CHECK_THROW(calculate_reliability(g, ord), std::length_error);
+    BOOST_CHECK_THROW(reliability_with(g, ord), std::length_error);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

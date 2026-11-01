@@ -347,8 +347,8 @@ BOOST_AUTO_TEST_CASE(ordering_independence_chain) {
     auto dfs_ord = teddy::graphrel::generate_variable_ordering(
         g, teddy::graphrel::ordering_strategy::dfs);
 
-    double r_bfs = teddy::graphrel::calculate_reliability(g, bfs_ord);
-    double r_dfs = teddy::graphrel::calculate_reliability(g, dfs_ord);
+    double r_bfs = teddy::graphrel::analyze_reliability(g, {.ordering = bfs_ord}).reliability;
+    double r_dfs = teddy::graphrel::analyze_reliability(g, {.ordering = dfs_ord}).reliability;
 
     BOOST_TEST(r_bfs == r_dfs, boost::test_tools::tolerance(1e-12));
     BOOST_TEST(r_bfs == 0.81,  boost::test_tools::tolerance(1e-12));
@@ -363,8 +363,8 @@ BOOST_AUTO_TEST_CASE(ordering_independence_bridge) {
     auto dfs_ord = teddy::graphrel::generate_variable_ordering(
         g, teddy::graphrel::ordering_strategy::dfs);
 
-    double r_bfs = teddy::graphrel::calculate_reliability(g, bfs_ord);
-    double r_dfs = teddy::graphrel::calculate_reliability(g, dfs_ord);
+    double r_bfs = teddy::graphrel::analyze_reliability(g, {.ordering = bfs_ord}).reliability;
+    double r_dfs = teddy::graphrel::analyze_reliability(g, {.ordering = dfs_ord}).reliability;
 
     BOOST_TEST(r_bfs == r_dfs, boost::test_tools::tolerance(1e-12));
 }

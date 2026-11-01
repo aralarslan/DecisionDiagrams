@@ -36,13 +36,19 @@ The core of `libgraphrel` is a graph-side decomposition engine. It operates on t
 
 An implementation of the Layer-by-Layer (LBL) recursive decomposition algorithm from Wu & Sun (2024). It traverses the network layer by layer and discards each layer once it has been processed.
 
-`calculate_reliability(g)` returns the scalar reliability $R(G, K)$ as a `double`. No intermediate state is retained, so memory usage stays low regardless of network size.
+`calculate_reliability(g)` returns the exact reliability $R(G, K)$ as a `double`. Only two layers are kept at a time, so memory stays bounded by the widest layer.
+
+For more control, `analyze_reliability(g, options)` returns a `reliability_result` (`reliability`, `upper_bound`, `exact()`, `statistics`). `reliability_options` sets:
+
+- `ordering`: a custom variable ordering (default: cut-width; `generate_variable_ordering(g, ordering_strategy::bfs)` reproduces Wu & Sun's setup);
+- `threads`: threads for large layers (`1` by default, `0` for all cores). The result is bit-identical for any thread count;
+- `prune_threshold`: drop branches with probability at or below it; the result is then an interval `[reliability, upper_bound]` guaranteed to contain $R$.
 
 ### 2. BDD Builder
 
 Uses the same decomposition engine, but retains the full state space to construct a Binary Decision Diagram inside TeDDy.
 
-`build_diagram(g)` returns a `teddy::graphrel::reliability_diagram`. This struct owns a `bss_manager` and exposes `manager`, `diagram`, and `probs` as public members. You can use it with TeDDy's full analysis suite: logic derivatives (`dpld`), Structural Importance, Birnbaum Importance, and Minimal Cut Vectors (MCVs).
+`build_diagram(g)` returns a `teddy::graphrel::reliability_diagram` (`build_diagram(g, options)` takes a `diagram_options`: `ordering`, `threads`, `pool_size`). This struct owns a `bss_manager` and exposes `manager`, `diagram`, and `probs` as public members. You can use it with TeDDy's full analysis suite: logic derivatives (`dpld`), Structural Importance, Birnbaum Importance, and Minimal Cut Vectors (MCVs).
 
 ---
 
@@ -103,10 +109,14 @@ int main () {
     */
 
     // Path 1: LBL Calculator — returns a scalar, discards intermediate layers.
-    // An optional second argument sets the number of threads (0 = all cores);
-    // the result is bit-identical for any thread count.
     double r_lbl = teddy::graphrel::calculate_reliability(g);
     std::cout << "LBL Reliability: " << r_lbl << "\n";
+
+    // The same with options: all cores (bit-identical result) and statistics.
+    teddy::graphrel::reliability_options options;
+    options.threads = 0;
+    auto result = teddy::graphrel::analyze_reliability(g, options);
+    std::cout << "Widest layer: " << result.statistics.max_layer_size << " states\n";
 
     // Path 2: BDD Builder — constructs a full diagram inside TeDDy
     auto bdd = teddy::graphrel::build_diagram(g);

@@ -1,5 +1,4 @@
 // Reproduce Wu & Sun (2024) Table 2 rows with the library's LBL.
-#include "lbl/lbl_detail.hpp"
 #include <teddy/graphrel/graphrel.hpp>
 #include <chrono>
 #include <cstdio>
@@ -28,11 +27,11 @@ int main(int argc, char** argv) {
     }
     g.set_all_vertex_probs(0.9);
     auto t0 = std::chrono::steady_clock::now();
-    lbl_calculator calc(g);
-    double r = calc.calculate();
+    const reliability_result res = analyze_reliability(g);
+    double r = res.reliability;
     double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    auto st = calc.get_statistics();
+    auto st = res.statistics;
     std::printf("%s %s %s: R=%.6f  max_layer_size(G^max)=%zu  max_boundary=%zu  layers=%zu  time=%.1fs  RSS=%ldMB\n",
-                which, argv[2], argc > 3 ? argv[3] : "", r, st.max_layer_size, st.max_boundary_size,
+                which, argv[2], argc > 3 ? argv[3] : "", r, st.max_layer_size, st.max_front_size,
                 st.num_layers, s, rss_mb());
 }

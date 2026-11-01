@@ -75,7 +75,7 @@ int main(int argc, char** argv) {
         for (const auto* o : {&ord, &partial}) {
             try {
                 std::printf("[custom ordering] exact=%.6f got=%.6f\n", 0.5 * 0.81,
-                            calculate_reliability(g, *o));
+                            analyze_reliability(g, {.ordering = *o}).reliability);
             } catch (const std::invalid_argument& e) {
                 std::printf("[custom ordering] rejected: %s\n", e.what());
             }

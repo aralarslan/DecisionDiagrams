@@ -145,12 +145,12 @@ int main(int argc, char** argv) {
 
         // LBL under other orderings
         auto off = [&](double r) { return std::fabs(rb - r) > 1e-9; };
-        fails_dfs += off(calculate_reliability(g, generate_variable_ordering(g, ordering_strategy::dfs)));
-        fails_vp  += off(calculate_reliability(g, random_vertex_priority(g, rng)));
+        fails_dfs += off(analyze_reliability(g, {.ordering = generate_variable_ordering(g, ordering_strategy::dfs)}).reliability);
+        fails_vp  += off(analyze_reliability(g, {.ordering = random_vertex_priority(g, rng)}).reliability);
         // Orderings that break vertex priority are rejected since 5df2a69; on the
         // original code they returned wrong answers. Count either outcome.
         try {
-            fails_any += off(calculate_reliability(g, random_any(g, rng)));
+            fails_any += off(analyze_reliability(g, {.ordering = random_any(g, rng)}).reliability);
         } catch (const std::invalid_argument&) {
             ++rejected_any;
         }

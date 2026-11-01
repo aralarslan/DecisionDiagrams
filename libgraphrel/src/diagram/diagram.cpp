@@ -235,15 +235,22 @@ private:
 // ── Public build_diagram
 // ─────────────────────────────────────────────────────────
 
-reliability_diagram build_diagram (graph const& g, teddy::int64 pool_size)
+reliability_diagram build_diagram (
+    graph const& g,
+    diagram_options const& options
+)
 {
-    detail::require_valid(g, "build_diagram");
-    auto ordering = generate_variable_ordering(g, ordering_strategy::cutwidth);
+    constexpr char const* who = "build_diagram";
+    detail::require_valid(g, who);
+    std::vector<variable> const ordering
+        = options.ordering.empty()
+            ? generate_variable_ordering(g)
+            : detail::require_valid_ordering(g, options.ordering, who);
     bool const has_imperfect = ! g.all_vertices_perfect();
     teddy::int32 var_count   = count_bdd_variables(ordering, has_imperfect);
 
-    teddy::bss_manager mgr(var_count, pool_size);
-    diagram_builder builder(g, ordering, mgr, /*threads=*/1);
+    teddy::bss_manager mgr(var_count, options.pool_size);
+    diagram_builder builder(g, ordering, mgr, options.threads);
     bdd_t diagram = builder.build();
 
     // Build probs vector indexed by TeDDy variable

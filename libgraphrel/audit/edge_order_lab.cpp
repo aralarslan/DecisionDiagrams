@@ -9,7 +9,6 @@
 //   library's departing-first rule)
 // LAB_PV=<p> sets every vertex probability (default 0.9).
 // Prints, per variant: widest layer / total states (time, R).
-#include "lbl/lbl_detail.hpp"
 #include <teddy/graphrel/graphrel.hpp>
 #include <algorithm>
 #include <chrono>
@@ -127,11 +126,11 @@ int main(int argc, char** argv) {
     for (int a = 3; a < argc; ++a) {
         auto ord = reorder(g, base, argv[a]);
         auto t0 = std::chrono::steady_clock::now();
-        lbl_calculator calc(g, ord);
-        double R = calc.calculate();
+        const reliability_result res = analyze_reliability(g, {.ordering = ord});
+        double R = res.reliability;
         double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-        auto st = calc.get_statistics();
-        std::printf("  %s:%zu/%zu(%.2fs,R=%.6f)", argv[a], st.max_layer_size, st.total_decompositions, s, R);
+        auto st = res.statistics;
+        std::printf("  %s:%zu/%zu(%.2fs,R=%.6f)", argv[a], st.max_layer_size, st.total_states, s, R);
     }
     std::printf("\n");
 }

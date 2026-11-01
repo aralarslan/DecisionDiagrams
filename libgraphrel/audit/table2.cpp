@@ -5,7 +5,6 @@
 // id. B1 = states per layer that the layer's variable splits (the paper's
 // G^max); Gmax = all states per layer. THREADS=<n> in the environment sets the
 // number of threads (default 1; 0 = all hardware threads).
-#include "lbl/lbl_detail.hpp"
 #include <teddy/graphrel/graphrel.hpp>
 #include <chrono>
 #include <cstdio>
@@ -59,15 +58,14 @@ int main(int argc, char** argv) {
     auto ord = strat == "paper" ? by_id(g)
              : generate_variable_ordering(g, strat == "bfs" ? ordering_strategy::bfs : ordering_strategy::cutwidth);
     auto t0 = std::chrono::steady_clock::now();
-    lbl_calculator calc(g, ord);
     const unsigned threads = std::getenv("THREADS") ? static_cast<unsigned>(std::atoi(std::getenv("THREADS"))) : 1u;
-    calc.set_threads(threads);
-    double R = calc.calculate();
+    const reliability_result res = analyze_reliability(g, {.ordering = ord, .threads = threads});
+    double R = res.reliability;
     double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    auto st = calc.get_statistics();
+    auto st = res.statistics;
     rusage u{}; getrusage(RUSAGE_SELF, &u);
     std::printf("%-16s %-8s T=%u V=%zu E=%zu L=%zu  R=%.6f  B1=%zu  Gmax=%zu  F=%zu  work=%zu  time=%.1fs  peakRSS=%ldMB  tables=%.1fMB\n",
                 name.c_str(), strat.c_str(), threads, g.num_vertices(), g.num_edges(), st.num_layers, R,
-                st.max_branching_layer_size, st.max_layer_size, st.max_boundary_size,
-                st.total_decompositions, s, u.ru_maxrss / 1024, st.peak_table_bytes / 1048576.0);
+                st.max_branching_layer_size, st.max_layer_size, st.max_front_size,
+                st.total_states, s, u.ru_maxrss / 1024, st.peak_memory_bytes / 1048576.0);
 }

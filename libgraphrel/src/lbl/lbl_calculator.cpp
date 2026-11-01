@@ -1,12 +1,19 @@
 /**
  * @file lbl_calculator.cpp
  * @brief Layer-by-layer reliability (Wu & Sun 2024) on frontier-local states.
+ *
+ * Each layer is a table of states (see frontier.hpp) with the probability of
+ * reaching them; processing one variable expands every state into at most
+ * two children, merging children with identical keys (layer_engine.hpp).
+ * Only two layers are alive at a time.
  */
 
 #include <algorithm>
 #include <stdexcept>
+#include <string>
 
 #include "common/validation.hpp"
+#include "frontier/frontier.hpp"
 #include "frontier/layer_engine.hpp"
 #include "lbl/lbl_detail.hpp"
 #include "teddy/graphrel/reliability.hpp"
@@ -17,139 +24,74 @@ namespace teddy::graphrel
 namespace
 {
 
-constexpr char const* who = "calculate_reliability";
+constexpr char const* who = "analyze_reliability";
 
 } // namespace
 
-lbl_calculator::lbl_calculator(graph const& g) :
-    lbl_calculator(
-        g,
-        generate_variable_ordering(
-            detail::require_valid(g, who),
-            ordering_strategy::cutwidth
-        )
-    )
-{
-}
-
-// The graph and ordering are validated before anything indexes into them.
-lbl_calculator::lbl_calculator(
+reliability_result detail::analyze_reliability(
     graph const& g,
-    std::vector<variable> const& ordering
-) :
-    net_(detail::require_valid(g, who)),
-    ordering_(detail::require_valid_ordering(g, ordering, who))
+    reliability_options const& options,
+    parallel_grain const& grain
+)
 {
-}
-
-double lbl_calculator::calculate()
-{
-    stats_               = statistics {};
-    dropped_probability_ = 0.0;
-
-    // |K| = 1: the terminal set is connected iff that vertex works.
-    if (net_.terminals().size() == 1)
+    detail::require_valid(g, who);
+    if (! (options.prune_threshold >= 0.0 && options.prune_threshold < 1.0))
     {
-        return net_.vertex_probs()[net_.terminals().front()];
+        throw std::invalid_argument(
+            std::string(who) + ": prune_threshold must be in [0, 1)"
+        );
+    }
+    std::vector<variable> const ordering
+        = options.ordering.empty()
+            ? generate_variable_ordering(g)
+            : detail::require_valid_ordering(g, options.ordering, who);
+
+    reliability_result result;
+    // |K| = 1: the terminal set is connected iff that vertex works.
+    if (g.terminals().size() == 1)
+    {
+        result.reliability = g.vertex_probs()[g.terminals().front()];
+        result.upper_bound = result.reliability;
+        return result;
     }
 
-    detail::frontier_plan const plan(
-        net_,
-        ordering_,
-        /*force_perfect_vertices=*/true
-    );
-    stats_.num_layers        = plan.levels();
-    stats_.max_boundary_size = plan.max_front_size();
+    frontier_plan const plan(g, ordering, /*force_perfect_vertices=*/true);
+    engine_options engine;
+    engine.threads            = options.threads;
+    engine.prune_threshold    = options.prune_threshold;
+    engine.block_size         = grain.block_size;
+    engine.min_parallel_layer = grain.min_parallel_layer;
+    auto const probability    = [&] (std::size_t level)
+    {
+        variable const& var = ordering[level];
+        return var.type == variable_type::edge ? g.edges()[var.id].prob
+                                               : g.vertex_probs()[var.id];
+    };
+    engine_result const r      = layer_engine(plan, engine).run(probability);
 
-    detail::engine_options options;
-    options.threads            = threads_;
-    options.prune_threshold    = prune_threshold_;
-    options.block_size         = block_size_;
-    options.min_parallel_layer = min_parallel_layer_;
-    detail::engine_result const r
-        = detail::layer_engine(plan, options)
-              .run(
-                  [this] (std::size_t level)
-                  {
-                      variable const& var = ordering_[level];
-                      return var.type == variable_type::edge
-                               ? net_.edges()[var.id].prob
-                               : net_.vertex_probs()[var.id];
-                  }
-              );
-
-    stats_.max_layer_size           = r.statistics.max_layer_size;
-    stats_.max_branching_layer_size = r.statistics.max_branching_layer_size;
-    stats_.total_decompositions     = r.statistics.total_states;
-    stats_.peak_table_bytes         = r.statistics.peak_memory_bytes;
-    dropped_probability_            = r.dropped;
-    return r.success;
+    result.reliability         = r.success;
+    result.upper_bound         = std::min(1.0, r.success + r.dropped);
+    reliability_statistics& s  = result.statistics;
+    s.num_layers               = plan.levels();
+    s.max_front_size           = plan.max_front_size();
+    s.max_layer_size           = r.statistics.max_layer_size;
+    s.max_branching_layer_size = r.statistics.max_branching_layer_size;
+    s.total_states             = r.statistics.total_states;
+    s.peak_memory_bytes        = r.statistics.peak_memory_bytes;
+    return result;
 }
 
-// ── Public free functions ────────────────────────────────────────────────────
-
-double calculate_reliability (graph const& g, unsigned threads)
-{
-    lbl_calculator calc(g);
-    calc.set_threads(threads);
-    return calc.calculate();
-}
-
-double calculate_reliability (
+reliability_result analyze_reliability (
     graph const& g,
-    std::vector<variable> const& ordering,
-    unsigned threads
+    reliability_options const& options
 )
 {
-    lbl_calculator calc(g, ordering);
-    calc.set_threads(threads);
-    return calc.calculate();
+    return detail::analyze_reliability(g, options, detail::parallel_grain {});
 }
 
-namespace
+double calculate_reliability (graph const& g)
 {
-reliability_bounds bounds_from (
-    lbl_calculator& calc,
-    double prune_threshold,
-    unsigned threads
-)
-{
-    calc.set_prune_threshold(prune_threshold);
-    calc.set_threads(threads);
-    double const lower = calc.calculate();
-    return {lower, std::min(1.0, lower + calc.dropped_probability())};
-}
-
-void check_threshold (double prune_threshold)
-{
-    if (! (prune_threshold >= 0.0 && prune_threshold < 1.0))
-        throw std::invalid_argument(
-            "calculate_reliability_bounds: prune_threshold must be in [0, 1)"
-        );
-}
-} // namespace
-
-reliability_bounds calculate_reliability_bounds (
-    graph const& g,
-    double prune_threshold,
-    unsigned threads
-)
-{
-    check_threshold(prune_threshold);
-    lbl_calculator calc(g);
-    return bounds_from(calc, prune_threshold, threads);
-}
-
-reliability_bounds calculate_reliability_bounds (
-    graph const& g,
-    std::vector<variable> const& ordering,
-    double prune_threshold,
-    unsigned threads
-)
-{
-    check_threshold(prune_threshold);
-    lbl_calculator calc(g, ordering);
-    return bounds_from(calc, prune_threshold, threads);
+    return analyze_reliability(g).reliability;
 }
 
 } // namespace teddy::graphrel

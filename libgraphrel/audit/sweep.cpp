@@ -1,5 +1,4 @@
 // G^max under BFS vs row-major sweep (vertex priority kept), meshes with p=0.9 everywhere.
-#include "lbl/lbl_detail.hpp"
 #include <teddy/graphrel/graphrel.hpp>
 #include <chrono>
 #include <cstdio>
@@ -34,11 +33,11 @@ int main(int argc, char** argv) {
         if (which == 0 && argc > 3) continue;  // skip BFS when asked
         auto ord = which == 0 ? generate_variable_ordering(g, ordering_strategy::bfs) : sweep;
         auto t0 = std::chrono::steady_clock::now();
-        lbl_calculator calc(g, ord);
-        double R = calc.calculate();
+        const reliability_result res = analyze_reliability(g, {.ordering = ord});
+        double R = res.reliability;
         double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-        auto st = calc.get_statistics();
+        auto st = res.statistics;
         std::printf("%zux%zu %-9s R=%.6f G^max=%zu Fmax=%zu time=%.1fs\n", r, c, which == 0 ? "BFS" : "row-sweep",
-                    R, st.max_layer_size, st.max_boundary_size, s);
+                    R, st.max_layer_size, st.max_front_size, s);
     }
 }

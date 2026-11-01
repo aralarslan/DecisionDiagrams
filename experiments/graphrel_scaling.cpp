@@ -3,9 +3,8 @@
  * @brief Scaling benchmark: LBL vs BDD on mesh networks (libgraphrel)
  *
  * Port of graphrel/tests/benchmarks/test_bsbdd_scaling.cpp, updated for the
- * new teddy::graphrel API.  Uses the internal lbl_calculator class directly so
- * that detailed statistics (G_max, total_decompositions, max_boundary_size)
- * are available.
+ * teddy::graphrel API. analyze_reliability() reports the detailed statistics
+ * (G_max, total_states, max_front_size).
  *
  * Usage:
  *   ./graphrel-scaling          # 3x3 through 8x8
@@ -13,7 +12,6 @@
  */
 
 #include "teddy/graphrel/graphrel.hpp"
-#include "lbl/lbl_detail.hpp"   // internal — for lbl_calculator::statistics
 
 #include <chrono>
 #include <cmath>
@@ -91,18 +89,18 @@ static ScalingResult run(int rows, int cols,
     res.vertices = g.num_vertices();
     res.edges    = g.edges().size();
 
-    // 1. LBL — use internal lbl_calculator to access statistics
+    // 1. LBL — analyze_reliability() reports the statistics
     {
         auto t0 = std::chrono::high_resolution_clock::now();
-        gr::lbl_calculator calc(g);
-        res.lbl_reliability = calc.calculate();
+        const gr::reliability_result lbl = gr::analyze_reliability(g);
+        res.lbl_reliability = lbl.reliability;
         auto t1 = std::chrono::high_resolution_clock::now();
         res.lbl_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
-        auto s = calc.get_statistics();
+        auto const& s = lbl.statistics;
         res.lbl_gmax           = s.max_layer_size;
-        res.lbl_decompositions = s.total_decompositions;
-        res.lbl_max_boundary   = s.max_boundary_size;
+        res.lbl_decompositions = s.total_states;
+        res.lbl_max_boundary   = s.max_front_size;
     }
 
     // 2. BDD — public build_diagram(); pool scaled from LBL decomposition count
@@ -111,8 +109,10 @@ static ScalingResult run(int rows, int cols,
             std::max(100'000LL,
                      static_cast<long long>(res.lbl_decompositions) / 2));
 
+        gr::diagram_options bdd_options;
+        bdd_options.pool_size = pool;
         auto t0 = std::chrono::high_resolution_clock::now();
-        gr::reliability_diagram bdd = gr::build_diagram(g, pool);
+        gr::reliability_diagram bdd = gr::build_diagram(g, bdd_options);
         res.bdd_reliability = bdd.manager.calculate_probability(bdd.probs, bdd.diagram);
         auto t1 = std::chrono::high_resolution_clock::now();
         res.bdd_time_ms   = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
