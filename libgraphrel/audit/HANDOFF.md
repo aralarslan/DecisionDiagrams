@@ -383,6 +383,52 @@ Each entry has the same shape: **Seen**, **How found**, **Root cause**, **Option
 - **Hash-only state identity.** Two states could in principle collide on the 64-bit boundary hash.
   Open; the frontier-local redesign removes it.
 
+### 3.17 Cleanup (no change in behaviour)
+
+- **Seen.** The audit (§3) listed dead and duplicated code:
+  - a duplicate `src/common/variable_ordering.hpp` that conflicted with the public header;
+  - three copies of each graph operation;
+  - unused helpers and the never-written log stream;
+  - documentation crediting the BDD builder to the wrong paper, and text mangled by a
+    "reliability" → "prob" search-and-replace;
+  - doc blocks inside function bodies;
+  - 15 compiler warnings.
+- **Decision.** One commit that changes no behaviour. It's verified the same way as the
+  performance work: BFS/DFS orderings byte-identical on 3,036 graphs; R, peak layer size and BDD
+  node counts unchanged on the benchmark set.
+  - The in-place graph operations are now the single implementation; the copying versions are
+    thin wrappers.
+  - `union_find::find` is iterative, with the same full path compression, so the parent arrays
+    are identical.
+  - `encode_k_bitset` is shared between LBL and BDD.
+- **Result.** No compiler warnings left in libgraphrel on GCC or Clang
+  (`-Wconversion -Wsign-conversion`). The BDD builder is credited to Hardy, Lucet & Limnios (2007).
+- **Correction to the audit (1.8).** `lbl_calculator` was never *copyable*: its `state_pool`
+  member deletes copying. It was *movable*, and a move would have left `boundary_` pointing at
+  the moved-from ordering. Since `e791a17`, `boundary_computer` doesn't keep the ordering at all,
+  and since `5df2a69` `lbl_calculator` is neither copyable nor movable.
+- **Commit.** `ad8200b`.
+
+### 3.18 `state_pool`: exception safety and real reuse
+
+- **Seen.**
+  - **Exception safety (audit 1.8).** A recycled state was destroyed and then rebuilt with
+    placement-new. If the rebuild threw, the node was in neither the live set nor the free list,
+    and the pool's destructor later destroyed it a second time.
+  - **Wasted pooling (audit 2.5).** The same pattern freed and re-allocated the state's four
+    vectors on every recycle, which is the expensive part the pool was meant to save.
+  - **Two smaller issues.** A leak if allocating a block's bookkeeping threw. And an extra-pool
+    size of 0 made `create()` write past an empty block.
+- **Options.**
+  1. Drop the pool and use plain `new`/`delete`.
+  2. Keep the pool, but overwrite recycled states by assignment.
+- **Decision.** Option 2. Copy-assignment reuses each vector's capacity, and if anything throws
+  the node is still a valid object on the free list. A fresh slot only counts as constructed after
+  its constructor returns. Block sizes are clamped to at least 1.
+- **Result.** Results and state counts unchanged. Best-of-5 timings are equal or faster: 7×7 −11%,
+  8×8 (vertices 0.9) −20%, 3×400 −19%, 6×40 unchanged. ASan/UBSan clean.
+- **Commit.** `8921856`.
+
 ---
 
 ## 4. Results
@@ -411,6 +457,7 @@ The CI test runs 1,500 graphs per mode, with DFS and random orderings as well.
 | N20 (10×10, p = 0.9), exact LBL | — | 140 s, 1.0 GB (paper: 42.9 s) |
 | K₁₂, exact LBL | 104 s | 75.5 s, 1.2 GB |
 | K₁₂, `calculate_reliability_bounds(1e-15)` | — | 1.9 s, interval width < 1e-9 |
+| `state_pool` reuse (`8921856`), 8×8 mesh, vertices 0.9, best of 5 | 1.94 s | 1.55 s |
 | N20, default ordering (cutwidth, `f4c3dc1`) | 387,481 states, 145 s (BFS) | 65,858 states, 63 s |
 | geo40_1 (random geometric, 40 vertices) | 162,075 states, 8.5 s (BFS) | 1,683 states, 0.11 s |
 
@@ -502,12 +549,11 @@ In recommended order. The [`README.md`](README.md) status table lists each findi
    - order the edges within each vertex's emission (it changes G^max: 5×5 gives 146 vs 208
      depending on edge-id order);
    - optionally race the top two candidates with capped LBL runs.
-2. **Cleanup** (audit 1.9, 2.5–2.7, §3):
-   - remove dead code and the duplicate `src/common/variable_ordering.hpp`;
-   - merge the `graph_operations` variants;
-   - fix the docs and credit the BDD builder to Hardy et al. rather than Wu & Sun;
-   - fix the warnings;
-   - fix `state_pool` exception safety.
+2. **Cleanup: done** (3.17, 3.18). Still open from audit §2–3:
+   - per-call allocations in `canonicalize_partition` and pruning (2.6);
+   - BDD recursion depth (2.7);
+   - `graph` as a class with private invariants (3.1). That is an API break, so it's best bundled
+     with item 3.
 3. **Frontier-local states (redesign).** Store only the boundary partition, K-marks and up/down
    flags instead of the whole graph. That makes per-state cost O(F) instead of O(V+E), makes keys
    exact (closing the Imai Theorem 1 gap and the hash-identity risk), and is the only route to the

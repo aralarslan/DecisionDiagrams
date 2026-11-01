@@ -18,14 +18,16 @@ and lessons learned) is in [`HANDOFF.md`](HANDOFF.md).
 | 1.5 1e-15 cutoff | LBL exact again; opt-in `calculate_reliability_bounds()` keeps the speed with a rigorous interval (`5df2a69`) |
 | 1.6 Overflow beyond F = 25 | Throws `std::length_error` instead of wrapping (`e791a17`). Hash-only identity: open |
 | 1.7 Parser / writer | Strict token parsing; exact round-trip (`5df2a69`) |
-| 1.8 Validation order, copyable `lbl_calculator` | Fixed (`5df2a69`); `state_pool` exception safety: open |
-| 1.9 Docs / attribution | Open (cleanup pass) |
+| 1.8 Validation order, `lbl_calculator` lifetime, `state_pool` exception safety | Fixed (`5df2a69`, `8921856`). Note: `lbl_calculator` was movable, not copyable; see HANDOFF §3.17 |
+| 1.9 Docs / attribution | Fixed (`ad8200b`) |
 | 2.1 `bell_cache` O((V+E)²) | Fixed (`e791a17`) |
 | 2.2 Boundary precompute O(L·V) | Fixed (`e791a17`) |
 | 2.3 Redundant connectivity rebuilds | Removed (`e791a17`); frontier-local states: open (redesign) |
 | 2.4 Ordering helpers | O(V+E), identical output (`e791a17`) |
 | Ordering quality (gap to Wu & Sun Table 2) | New `ordering_strategy::cutwidth`, default for LBL and BDD: N20 387,481 → 65,858 states (`f4c3dc1`); see HANDOFF §3.16 |
-| 2.5–2.7, §3 | Open |
+| 2.5 `state_pool` | Fixed: recycled states reuse their allocations (`8921856`) |
+| 2.6 Allocation churn, 2.7 BDD recursion depth | Open |
+| §3 Dead code, duplication, docs, warnings | Fixed (`ad8200b`); `graph` encapsulation (3.1): open |
 | §4 Tests and CI | Brute-force fuzz, precondition, I/O and paper tests; CI runs them on GCC and Clang, plus an ASan/UBSan job (`5df2a69`, `542bf11`) |
 
 ## Which reference applies to which code
