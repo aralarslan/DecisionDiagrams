@@ -434,18 +434,27 @@ order, which is the order that reproduces the paper's counts (§5.7).
 peaks at 5 states, and a dump of that layer shows five states with five different futures. No
 exact method can merge them, so the difference had to be in what is counted.
 
-**Explanation.** In Wu & Sun, "when the vertex variable fails, the edges connected to it are
-removed from the network" (§2.3). A subgraph whose current variable no longer exists is
-therefore not decomposed at that layer. The same holds when the variable cannot change the
-subgraph's future. We counted every state of a layer. The paper's G^max counts only the states
-that the layer's variable splits into two children. The library now reports both:
-`max_layer_size` and `max_branching_layer_size`.
+**Explanation.** We counted every state of a layer. Table 2's B¹ counts only the states that the
+layer's variable splits into two different children. The library now reports both:
+`max_layer_size` and `max_branching_layer_size`. The paper does not state its convention, so it
+was identified from the numbers, which match on every network (below). Two observations are
+consistent with it:
+- In Wu & Sun, "when the vertex variable fails, the edges connected to it are removed from the
+  network" (§2.3), so such a subgraph no longer contains those edge variables.
+- B¹ is compared with B², the node count of a reduced BDD. In a reduced BDD, a level holds only
+  the nodes whose function depends on that level's variable, which is exactly the branching
+  states.
+
+Fig. 3, by contrast, draws every subgraph of each layer. In its layer 5, G³₅ sends both branches
+to G²₆, and G⁵₅ both to G⁴₆. It shows 5 subgraphs there: our count of all states for the bridge
+is 5, and of branching states 3.
 
 **Result.** With the paper's ordering (vertices row by row, each vertex's edges by id) every
 published B¹ is reproduced exactly.
 
 | Net | Graph | Paper B¹ | Branching states, ours |
 |---|---|---|---|
+| — | bridge, Fig. 1 | (Fig. 3 draws 5 subgraphs, all states) | 3 (all states: 5) |
 | N9 | 2×20 | 4 | 4 |
 | N6 | 3×10 | 12 | 12 |
 | N7 | 3×12 | 12 | 12 |
@@ -453,13 +462,16 @@ published B¹ is reproduced exactly.
 | N20 | 10×10 | 53,924 | 53,924 |
 | N21 | 11×11 | 191,216 | 191,216 |
 | N22 | 12×12 | 684,114 | 684,114 |
+| N23 | 13×13 | 2,466,428 | 2,466,428 |
+| N25 | 1000×10 | 53,924 | 53,924 |
 | N27 | K₁₂ | 816,465 | 816,465 |
 | N28 | K₁₃ | 5,460,095 | 5,460,095 |
 
 Two details had to be identified:
 - **Mesh ordering.** The counts match a row-by-row sweep. A breadth-first search from a corner
   sweeps anti-diagonals (10×10: 316,303 branching states). The library's cut-width ordering
-  produces the row sweep, so its counts equal B¹ on N20–N22 as well.
+  produces the row sweep, so its counts equal B¹ on N20–N25 as well (N23 and N25 above were
+  measured with it).
 - **Terminals of the complete graphs.** Every pair of vertices of K_n is at "maximum distance",
   so the instance is defined only up to relabelling, and R does not depend on the choice. The
   layer sizes do. With the two terminals first in the order, K₁₂ gives 816,465 (the paper); with
