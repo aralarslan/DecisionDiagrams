@@ -575,6 +575,22 @@ BOOST_AUTO_TEST_CASE(cutwidth_ordering_reduces_layer_size) {
     BOOST_TEST(wide_default.get_statistics().max_boundary_size <= 6u);
 }
 
+// With perfect vertices the cut-width ordering picks by estimated total work:
+// on a square mesh a row sweep and BFS's diagonal sweep reach the same widest
+// layer, but the diagonal is only wide in the middle (7x7: 45,045 states in
+// total instead of 86,888).
+BOOST_AUTO_TEST_CASE(cutwidth_ordering_perfect_vertices_minimises_work) {
+    graph g = mesh(7, 7, 0.9);
+    std::fill(g.vertex_probs.begin(), g.vertex_probs.end(), 1.0);
+    lbl_calculator by_bfs(g, generate_variable_ordering(g, ordering_strategy::bfs));
+    lbl_calculator by_default(g);
+    BOOST_TEST(by_bfs.calculate() == by_default.calculate(), boost::test_tools::tolerance(1e-12));
+    BOOST_TEST(by_default.get_statistics().max_layer_size <=
+               by_bfs.get_statistics().max_layer_size);
+    BOOST_TEST(by_default.get_statistics().total_decompositions <=
+               by_bfs.get_statistics().total_decompositions);
+}
+
 // On a complete graph every vertex order is equivalent, so the cut-width
 // ordering keeps BFS's vertex order and differs only in the order of each
 // vertex's edges (departing, then most recent endpoints first; BFS: by id).

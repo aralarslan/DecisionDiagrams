@@ -23,6 +23,7 @@
 #include "common/validation.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <limits>
 #include <queue>
@@ -321,6 +322,47 @@ std::vector<std::size_t> vertices_of(const std::vector<variable>& ordering) {
     return sequence;
 }
 
+/// Estimated LBL work of an ordering when every vertex is perfect: the sum
+/// over levels of 2^(a * F), F = front size before the level. With perfect
+/// vertices a front vertex is absent only once pruned, so the layer size
+/// follows the number of block partitions of the front, and the edge cut adds
+/// little: fitted within graphs over 1,900 levels (meshes, random geometric
+/// graphs, BFS / DFS / cut-width), log2(states) = 1.61 F - 0.015 C + c(graph)
+/// with perfect vertices, against 1.51 F + 0.10 C + c(graph) with imperfect
+/// ones. The choice between candidates is insensitive to a in [1, 2].
+double perfect_vertex_work(const graph& g, const std::vector<variable>& ordering) {
+    constexpr double a = 1.6;
+    std::vector<std::size_t> remaining(g.num_vertices, 0);
+    for (const edge& e : g.edges) {
+        if (e.from != e.to) {
+            ++remaining[e.from];
+            ++remaining[e.to];
+        }
+    }
+    std::size_t front = 0;
+    double work = 0.0;
+    for (const variable& var : ordering) {
+        work += std::exp2(a * static_cast<double>(front));
+        if (var.type == variable_type::vertex) {
+            front += remaining[var.id] > 0;
+        } else {
+            const edge& e = g.edges[var.id];
+            if (e.from != e.to) {
+                front -= --remaining[e.from] == 0;
+                front -= --remaining[e.to] == 0;
+            }
+        }
+    }
+    return work;
+}
+
+std::vector<variable> emit_departing_first(const graph& g, const std::vector<std::size_t>& sequence) {
+    ordering_builder out(g, edge_order::departing_first);
+    for (std::size_t v : sequence)
+        out.emit_vertex(v);
+    return out.take();
+}
+
 std::vector<variable> cutwidth_ordering(const graph& g) {
     constexpr std::size_t none = std::numeric_limits<std::size_t>::max();
     constexpr std::size_t max_forced_starts = 16;
@@ -329,16 +371,9 @@ std::vector<variable> cutwidth_ordering(const graph& g) {
     // Candidates: BFS (so the result is never worse than BFS on this metric),
     // the free greedy, and the greedy forced through each neighbour of the
     // seed (this picks the sweep direction, e.g. the short side of a mesh).
-    std::vector<std::size_t> best = vertices_of(bfs_ordering(g));
-    cut_profile best_profile = profile_of(g, best);
-    auto consider = [&](std::vector<std::size_t> candidate) {
-        const cut_profile p = profile_of(g, candidate);
-        if (p < best_profile) {
-            best_profile = p;
-            best = std::move(candidate);
-        }
-    };
-    consider(greedy_cut_sequence(g, seed, none));
+    std::vector<std::vector<std::size_t>> candidates;
+    candidates.push_back(vertices_of(bfs_ordering(g)));
+    candidates.push_back(greedy_cut_sequence(g, seed, none));
     std::vector<char> tried(g.num_vertices, 0);
     std::size_t forced = 0;
     for (std::size_t eid : g.adj[seed]) {
@@ -347,13 +382,40 @@ std::vector<variable> cutwidth_ordering(const graph& g) {
             continue;
         tried[nb] = 1;
         ++forced;
-        consider(greedy_cut_sequence(g, seed, nb));
+        candidates.push_back(greedy_cut_sequence(g, seed, nb));
     }
 
-    ordering_builder out(g, edge_order::departing_first);
-    for (std::size_t v : best)
-        out.emit_vertex(v);
-    return out.take();
+    // Selection. With imperfect vertices, the edge cut governs the layer
+    // size (a front vertex with two or more unprocessed edges cannot be
+    // pruned when absent or isolated): smallest (largest cut, largest front,
+    // total cut). With perfect vertices only the front size matters, and
+    // ties on the peak are common (a square mesh swept by rows or by
+    // diagonals has the same widest layer, but the diagonal sweep is only
+    // wide in the middle: 10x10, 2.9 M vs 8.4 M states in total), so the
+    // estimated total work decides. The first candidate wins ties.
+    const bool perfect_vertices =
+        std::all_of(g.vertex_probs.begin(), g.vertex_probs.end(), [](double p) { return p >= 1.0; });
+    std::size_t best = 0;
+    if (perfect_vertices) {
+        double best_work = 0.0;
+        for (std::size_t c = 0; c < candidates.size(); ++c) {
+            const double work = perfect_vertex_work(g, emit_departing_first(g, candidates[c]));
+            if (c == 0 || work < best_work) {
+                best_work = work;
+                best = c;
+            }
+        }
+    } else {
+        cut_profile best_profile = profile_of(g, candidates[0]);
+        for (std::size_t c = 1; c < candidates.size(); ++c) {
+            const cut_profile p = profile_of(g, candidates[c]);
+            if (p < best_profile) {
+                best_profile = p;
+                best = c;
+            }
+        }
+    }
+    return emit_departing_first(g, candidates[best]);
 }
 
 } // namespace
