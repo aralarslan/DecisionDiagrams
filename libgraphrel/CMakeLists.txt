@@ -24,9 +24,12 @@ target_include_directories(
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
 )
 
+find_package(Threads REQUIRED)
+
 target_link_libraries(
     graphrel
     PUBLIC teddy
+    PRIVATE Threads::Threads
 )
 
 target_compile_features(

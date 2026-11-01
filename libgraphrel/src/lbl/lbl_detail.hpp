@@ -20,6 +20,11 @@ namespace teddy::graphrel {
  * reaching them; processing one variable expands every state into at most
  * two children, merging children with identical keys. Only two layers are
  * alive at a time.
+ *
+ * Large layers can be expanded by several threads. A layer is split into
+ * shards by key hash, each shard receives its children in the same order
+ * whatever the number of threads, and probabilities are summed in fixed
+ * blocks, so the result is bit-identical for every thread count.
  */
 class lbl_calculator {
 public:
@@ -38,6 +43,19 @@ public:
 
     /// Total probability of branches dropped by the last calculate() call.
     double dropped_probability() const { return dropped_probability_; }
+
+    /// Threads used to expand large layers (1 = serial, the default;
+    /// 0 = std::thread::hardware_concurrency()). The result does not depend
+    /// on it.
+    void set_threads(unsigned threads) { threads_ = threads; }
+
+    /// Testing hook: states per summation block, and the smallest layer that
+    /// is expanded in parallel. Changing the block size can change the last
+    /// bits of the result (it regroups floating-point sums).
+    void set_parallel_grain(std::size_t block_size, std::size_t min_parallel_layer) {
+        block_size_ = block_size == 0 ? 1 : block_size;
+        min_parallel_layer_ = min_parallel_layer;
+    }
 
     struct statistics {
         std::size_t max_layer_size = 0;       ///< most states in one layer
@@ -61,6 +79,9 @@ private:
     statistics stats_;
     double prune_threshold_ = 0.0;
     double dropped_probability_ = 0.0;
+    unsigned threads_ = 1;
+    std::size_t block_size_ = 4096;
+    std::size_t min_parallel_layer_ = 16384;
 };
 
 } // namespace teddy::graphrel

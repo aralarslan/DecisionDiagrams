@@ -447,9 +447,7 @@ expansion frontier_plan::expand(std::size_t level, const std::uint8_t* key,
 
 // ── state_table ─────────────────────────────────────────────────────────────
 
-namespace {
-
-std::uint64_t hash_bytes(const std::uint8_t* p, std::size_t n) {
+std::uint64_t state_table::hash(const std::uint8_t* p, std::size_t n) {
     std::uint64_t h = 0x9E3779B97F4A7C15ULL ^ n;
     std::size_t i = 0;
     for (; i + 8 <= n; i += 8) {
@@ -467,13 +465,12 @@ std::uint64_t hash_bytes(const std::uint8_t* p, std::size_t n) {
     return h;
 }
 
-} // namespace
-
 void state_table::reset(std::size_t key_size, std::size_t expected) {
     key_size_ = key_size;
-    keys_.clear();
-    probs_.clear();
-    hashes_.clear();
+    stride_ = 2 + (key_size + 7) / 8;
+    size_ = 0;
+    arena_.clear();
+    arena_.reserve(expected * stride_);
     std::size_t capacity = 16;
     while (capacity < 2 * expected)
         capacity *= 2;
@@ -483,8 +480,8 @@ void state_table::reset(std::size_t key_size, std::size_t expected) {
 void state_table::grow() {
     std::vector<std::uint32_t> bigger(slots_.size() * 2, 0);
     const std::size_t mask = bigger.size() - 1;
-    for (std::size_t e = 0; e < hashes_.size(); ++e) {
-        std::size_t idx = hashes_[e] & mask;
+    for (std::size_t e = 0; e < size_; ++e) {
+        std::size_t idx = arena_[e * stride_] & mask;
         while (bigger[idx] != 0)
             idx = (idx + 1) & mask;
         bigger[idx] = static_cast<std::uint32_t>(e + 1);
@@ -492,33 +489,35 @@ void state_table::grow() {
     slots_.swap(bigger);
 }
 
-std::size_t state_table::add(const std::uint8_t* key, double probability) {
-    if (2 * (probs_.size() + 1) > slots_.size())
+std::size_t state_table::add(const std::uint8_t* key, std::uint64_t h, double probability) {
+    if (2 * (size_ + 1) > slots_.size())
         grow();
-    const std::uint64_t h = hash_bytes(key, key_size_);
     const std::size_t mask = slots_.size() - 1;
     std::size_t idx = h & mask;
     while (slots_[idx] != 0) {
         const std::size_t e = slots_[idx] - 1;
-        if (hashes_[e] == h && std::memcmp(keys_.data() + e * key_size_, key, key_size_) == 0) {
-            probs_[e] += probability;
+        std::uint64_t* record = arena_.data() + e * stride_;
+        if (record[0] == h && std::memcmp(record + 2, key, key_size_) == 0) {
+            record[1] = std::bit_cast<std::uint64_t>(std::bit_cast<double>(record[1]) + probability);
             return e;
         }
         idx = (idx + 1) & mask;
     }
-    const std::size_t e = probs_.size();
+    const std::size_t e = size_;
     if (e >= 0xFFFFFFFFu)
         throw std::length_error("graphrel: more than 2^32 states in one layer");
     slots_[idx] = static_cast<std::uint32_t>(e + 1);
-    keys_.insert(keys_.end(), key, key + key_size_);
-    probs_.push_back(probability);
-    hashes_.push_back(h);
+    arena_.resize(arena_.size() + stride_, 0); // zero padding after the key
+    std::uint64_t* record = arena_.data() + e * stride_;
+    record[0] = h;
+    record[1] = std::bit_cast<std::uint64_t>(probability);
+    std::memcpy(record + 2, key, key_size_);
+    ++size_;
     return e;
 }
 
 std::size_t state_table::memory_bytes() const {
-    return keys_.capacity() + probs_.capacity() * sizeof(double) +
-           hashes_.capacity() * sizeof(std::uint64_t) +
+    return arena_.capacity() * sizeof(std::uint64_t) +
            slots_.capacity() * sizeof(std::uint32_t);
 }
 

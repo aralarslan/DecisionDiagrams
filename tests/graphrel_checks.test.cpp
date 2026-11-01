@@ -235,6 +235,66 @@ BOOST_AUTO_TEST_CASE(fuzz_paper_with_perfect_edges) { run_fuzz(fuzz_mode::paper_
 BOOST_AUTO_TEST_CASE(fuzz_anything_k2)              { run_fuzz(fuzz_mode::any_k2, 1500, 3); }
 BOOST_AUTO_TEST_CASE(fuzz_anything)                 { run_fuzz(fuzz_mode::any, 1500, 4); }
 
+// Parallel expansion. A tiny grain sends almost every layer through the
+// threaded path (rounds, shard merges, order rebuild). For every thread count
+// the result, and with pruning the dropped probability, must be bit-identical
+// to the serial run with the same grain, and the result must match brute force.
+BOOST_AUTO_TEST_CASE(fuzz_parallel_is_deterministic) {
+    std::mt19937_64 rng(6);
+    int wrong = 0, differs = 0;
+    for (int it = 0; it < 600; ++it) {
+        const graph g = random_graph(rng, fuzz_mode::any_k2);
+        const double exact = brute_force(g);
+        for (double threshold : {0.0, 0.01}) {
+            double serial = 0.0, serial_dropped = 0.0;
+            for (unsigned threads : {1u, 2u, 3u, 4u}) {
+                lbl_calculator calc(g);
+                calc.set_parallel_grain(1, 1);
+                calc.set_prune_threshold(threshold);
+                calc.set_threads(threads);
+                const double r = calc.calculate();
+                if (threads == 1) {
+                    serial = r;
+                    serial_dropped = calc.dropped_probability();
+                } else {
+                    differs += r != serial || calc.dropped_probability() != serial_dropped;
+                }
+                if (threshold == 0.0)
+                    wrong += std::fabs(r - exact) > exact_tol;
+            }
+        }
+    }
+    BOOST_TEST(wrong == 0);
+    BOOST_TEST(differs == 0);
+}
+
+// Same on layers of thousands of states (many rounds per layer), and with the
+// default grain, where only the large layers run in parallel.
+BOOST_AUTO_TEST_CASE(parallel_large_layers_are_deterministic) {
+    for (const graph& g : {complete(10, 0.9), mesh(7, 7, 0.9)}) {
+        for (std::size_t block : {std::size_t{7}, std::size_t{4096}}) {
+            double serial = 0.0;
+            std::size_t serial_states = 0;
+            for (unsigned threads : {1u, 2u, 4u}) {
+                lbl_calculator calc(g);
+                if (block != 4096)
+                    calc.set_parallel_grain(block, 1);
+                calc.set_threads(threads);
+                const double r = calc.calculate();
+                if (threads == 1) {
+                    serial = r;
+                    serial_states = calc.get_statistics().total_decompositions;
+                } else {
+                    BOOST_TEST(r == serial); // bit-identical
+                    BOOST_TEST(calc.get_statistics().total_decompositions == serial_states);
+                }
+            }
+        }
+    }
+    const graph k10 = complete(10, 0.9);
+    BOOST_TEST(calculate_reliability(k10, 0) == calculate_reliability(k10, 1));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ═════════════════════════════════════════════════════════════════════════════

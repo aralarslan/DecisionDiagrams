@@ -4,6 +4,7 @@
 #include "teddy/graphrel/graph.hpp"
 #include "teddy/graphrel/variable_ordering.hpp"
 
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <utility>
@@ -137,29 +138,42 @@ private:
 /**
  * @brief Open-addressing table of states of one layer with exact keys.
  *
- * Keys are stored back to back in an arena and compared byte for byte, so
- * two different states can never be merged by a hash collision.
+ * Entries are stored back to back in an arena, each as one record
+ * [hash | probability | key, zero-padded to 8 bytes], so a lookup touches
+ * one slot and one record. Keys are compared byte for byte, so two different
+ * states can never be merged by a hash collision.
  */
 class state_table {
 public:
+    /// The hash add() uses (64 well-mixed bits).
+    static std::uint64_t hash(const std::uint8_t* key, std::size_t key_size);
+
     void reset(std::size_t key_size, std::size_t expected);
 
     /// Insert a key with @p probability or add to an existing entry.
     /// Returns the entry index.
-    std::size_t add(const std::uint8_t* key, double probability);
+    std::size_t add(const std::uint8_t* key, double probability) {
+        return add(key, hash(key, key_size_), probability);
+    }
+    /// Same, with @p hash == hash(key, key_size()) already computed.
+    std::size_t add(const std::uint8_t* key, std::uint64_t hash, double probability);
 
-    std::size_t size() const { return probs_.size(); }
-    const std::uint8_t* key(std::size_t i) const { return keys_.data() + i * key_size_; }
-    double probability(std::size_t i) const { return probs_[i]; }
+    std::size_t size() const { return size_; }
+    const std::uint8_t* key(std::size_t i) const {
+        return reinterpret_cast<const std::uint8_t*>(arena_.data() + i * stride_ + 2);
+    }
+    double probability(std::size_t i) const {
+        return std::bit_cast<double>(arena_[i * stride_ + 1]);
+    }
     std::size_t key_size() const { return key_size_; }
     std::size_t memory_bytes() const;
 
 private:
     void grow();
     std::size_t key_size_ = 0;
-    std::vector<std::uint8_t> keys_;
-    std::vector<double> probs_;
-    std::vector<std::uint64_t> hashes_;
+    std::size_t stride_ = 2;  ///< record size in 8-byte words
+    std::size_t size_ = 0;
+    std::vector<std::uint64_t> arena_;
     std::vector<std::uint32_t> slots_; ///< entry index + 1, 0 = empty
 };
 
