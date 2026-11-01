@@ -4,14 +4,7 @@ add_library(
     graphrel
         src/common/graph.cpp
         src/common/graph_io.cpp
-        src/common/union_find.cpp
-        src/common/decomp_state.cpp
-        src/common/graph_operations.cpp
-        src/common/partition.cpp
-        src/common/bell_cache.cpp
         src/common/variable_ordering.cpp
-        src/common/pruning.cpp
-        src/common/boundary.cpp
         src/common/validation.cpp
         src/lbl/lbl_calculator.cpp
         src/frontier/frontier.cpp

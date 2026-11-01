@@ -37,8 +37,9 @@ struct edge {
  * Uses adjacency list for efficient edge operations (delete, contract).
  */
 struct graph {
-  /// Largest supported number of vertices (union-find uses 16-bit parents).
-  static constexpr std::size_t max_vertices = 65535;
+  /// Largest supported number of vertices (a sanity bound for inputs; the
+  /// algorithms store vertex ids in 32 bits).
+  static constexpr std::size_t max_vertices = std::size_t{1} << 24;
 
   // Graph structure
   std::size_t num_vertices; ///< Number of vertices |V|

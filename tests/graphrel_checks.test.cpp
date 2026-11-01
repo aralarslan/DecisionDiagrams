@@ -9,16 +9,14 @@
  *                                |K| = 1 semantics, regressions from the
  *                                libgraphrel audit.
  * - graphrel_io_test:            strict parsing and exact round-trips.
- * - graphrel_paper_test:         values from Wu & Sun (2024) Table 2 and
- *                                Carlier & Lucet (1996) Algorithms 1-2.
+ * - graphrel_paper_test:         values from Wu & Sun (2024) Table 2, the
+ *                                ordering quality guard and frontier limits.
  */
 
 #include <boost/test/unit_test.hpp>
 #include <boost/test/tools/floating_point_comparison.hpp>
 
 #include <teddy/graphrel/graphrel.hpp>
-#include "common/bell_cache.hpp"
-#include "common/partition.hpp"
 #include "lbl/lbl_detail.hpp"
 
 #include <algorithm>
@@ -380,7 +378,7 @@ BOOST_AUTO_TEST_CASE(malformed_input_rejected) {
         "p reliability 2 1\nt\ne 0 1\n",                // empty terminal set
         "p reliability 2 1\nt 0 1\nedge 0 1\n",         // unknown line type
         "p reliability 2 2\nt 0 1\ne 0 1\n",            // edge count mismatch
-        "p reliability 70000 0\nt 0\n",                 // too many vertices
+        "p reliability 20000000 0\nt 0\n",              // too many vertices
     };
     for (const char* text : bad)
         BOOST_CHECK_THROW(parse(text), ParseError);
@@ -477,48 +475,49 @@ BOOST_AUTO_TEST_CASE(cutwidth_ordering_reduces_layer_size) {
     BOOST_TEST(wide_default.get_statistics().max_boundary_size <= 6u);
 }
 
-// Carlier & Lucet (1996) §4.7, Algorithm 2 transcribed literally, compared
-// with partition_to_number over every partition of up to 8 elements.
-BOOST_AUTO_TEST_CASE(carlier_lucet_class_numbering) {
-    const bell_cache cache(12);
-    auto cl_number = [&](const std::vector<int>& part) {
-        std::uint64_t num = 1;
-        int j = 1;
-        for (std::size_t i = 2; i <= part.size(); ++i) {
-            if (part[i - 1] == j + 1) {
-                ++j;
-                num += cache.stirling(i - 1, static_cast<std::size_t>(j)) * static_cast<std::uint64_t>(j);
-            } else {
-                num = (num - 1) * static_cast<std::uint64_t>(j) + static_cast<std::uint64_t>(part[i - 1]);
-            }
-        }
-        for (int h = 1; h < j; ++h)
-            num += cache.stirling(part.size(), static_cast<std::size_t>(h));
-        return num;
-    };
-
-    std::size_t bad = 0;
-    for (std::size_t F = 1; F <= 8; ++F) {
-        std::vector<int> part(F, 1);
-        std::vector<char> seen(cache.bell(F) + 1, 0);
-        std::function<void(std::size_t, int)> rec = [&](std::size_t i, int max_block) {
-            if (i == F) {
-                const std::uint64_t n = partition_to_number(part, max_block, cache);
-                if (n != cl_number(part) || n < 1 || n > cache.bell(F) || seen[n] ||
-                    number_to_partition(n, F, cache) != part)
-                    ++bad;
-                else
-                    seen[n] = 1;
-                return;
-            }
-            for (int b = 1; b <= max_block + 1; ++b) {
-                part[i] = b;
-                rec(i + 1, std::max(max_block, b));
-            }
-        };
-        rec(1, 1);
+// Frontier-local states have no Bell-number limit: a front of 31 vertices is
+// fine when few states exist. s - 30 middle vertices - t, edges s-m perfect,
+// m-t at 0.5: R = 1 - 0.5^30. The ordering reaches every middle vertex
+// before t, so the front holds all 30 middles plus t.
+BOOST_AUTO_TEST_CASE(frontier_handles_large_fronts) {
+    const std::size_t m = 30;
+    graph g(m + 2, 2 * m);
+    const std::size_t s = 0, t = m + 1;
+    for (std::size_t i = 1; i <= m; ++i) g.add_edge(s, i, 1.0);     // edges 0..m-1
+    for (std::size_t i = 1; i <= m; ++i) g.add_edge(i, t, 0.5);     // edges m..2m-1
+    g.set_terminals({s, t});
+    using vt = variable_type;
+    std::vector<variable> ord{{vt::vertex, s}};
+    for (std::size_t i = 1; i <= m; ++i) {
+        ord.emplace_back(vt::vertex, i);
+        ord.emplace_back(vt::edge, i - 1);
     }
-    BOOST_TEST(bad == 0u);
+    ord.emplace_back(vt::vertex, t);
+    for (std::size_t i = 1; i <= m; ++i) ord.emplace_back(vt::edge, m + i - 1);
+
+    lbl_calculator calc(g, ord);
+    const double r = calc.calculate();
+    BOOST_TEST(r == 1.0 - std::pow(0.5, 30), boost::test_tools::tolerance(1e-15));
+    BOOST_TEST(calc.get_statistics().max_boundary_size == 31u);
+    BOOST_TEST(calc.get_statistics().max_layer_size <= 2u);
+}
+
+// Fronts above frontier_plan::max_front (64) are rejected with a clear error.
+BOOST_AUTO_TEST_CASE(frontier_rejects_oversized_fronts) {
+    const std::size_t m = 70;
+    graph g(m + 2, 2 * m);
+    for (std::size_t i = 1; i <= m; ++i) g.add_edge(0, i, 1.0);
+    for (std::size_t i = 1; i <= m; ++i) g.add_edge(i, m + 1, 0.5);
+    g.set_terminals({0, m + 1});
+    using vt = variable_type;
+    std::vector<variable> ord{{vt::vertex, 0}};
+    for (std::size_t i = 1; i <= m; ++i) {
+        ord.emplace_back(vt::vertex, i);
+        ord.emplace_back(vt::edge, i - 1);
+    }
+    ord.emplace_back(vt::vertex, m + 1);
+    for (std::size_t i = 1; i <= m; ++i) ord.emplace_back(vt::edge, m + i - 1);
+    BOOST_CHECK_THROW(calculate_reliability(g, ord), std::length_error);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
