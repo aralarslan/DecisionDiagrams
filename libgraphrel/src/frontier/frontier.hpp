@@ -60,6 +60,10 @@ class frontier_plan
 public:
     /// Largest supported front: block labels fit a byte, K-marks a 64-bit mask.
     static constexpr std::size_t max_front = 64;
+    /// Bytes of the K-mask at the start of every key.
+    static constexpr std::size_t kmask_bytes = 8;
+    /// Largest key: room for a child key of any level.
+    static constexpr std::size_t max_key_size = kmask_bytes + max_front;
 
     /**
      * @param g        valid graph with |K| >= 2
@@ -88,7 +92,7 @@ public:
 
     std::size_t key_size (std::size_t level) const
     {
-        return 8 + front_size_[level];
+        return kmask_bytes + front_size_[level];
     }
 
     std::size_t max_front_size () const
@@ -99,7 +103,7 @@ public:
     /// Key of the initial state (empty front, no blocks).
     std::vector<std::uint8_t> initial_key () const
     {
-        return std::vector<std::uint8_t>(8, 0);
+        return std::vector<std::uint8_t>(kmask_bytes, 0);
     }
 
     /// Expand the state @p key at @p level by ordering[level]. Live children
@@ -142,7 +146,6 @@ private:
     /// non-terminal blocks, canonicalise labels, detect success and failure.
     outcome finish (
         step const& s,
-        std::size_t level,
         std::uint64_t kmask,
         std::uint8_t* codes,
         std::size_t f,

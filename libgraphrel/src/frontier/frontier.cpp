@@ -22,6 +22,26 @@ constexpr std::uint64_t bit (std::uint8_t label)
     return std::uint64_t {1} << (label - 1);
 }
 
+/// Key layout (frontier.hpp): K-mask in the first kmask_bytes bytes, then
+/// one label per front position.
+std::uint64_t load_kmask (std::uint8_t const* key)
+{
+    std::uint64_t kmask = 0;
+    std::memcpy(&kmask, key, frontier_plan::kmask_bytes);
+    return kmask;
+}
+
+void store_key (
+    std::uint8_t* out,
+    std::uint64_t kmask,
+    std::uint8_t const* codes,
+    std::size_t n
+)
+{
+    std::memcpy(out, &kmask, frontier_plan::kmask_bytes);
+    std::memcpy(out + frontier_plan::kmask_bytes, codes, n);
+}
+
 } // namespace
 
 // ── frontier_plan ───────────────────────────────────────────────────────────
@@ -36,19 +56,9 @@ frontier_plan::frontier_plan(
 
     // Remaining non-loop edges per vertex. Self-loops never connect anything,
     // so they do not keep a vertex on the front.
-    std::vector<std::uint32_t> remaining(n, 0);
-    for (variable const& var : ordering)
-    {
-        if (var.type == variable_type::edge)
-        {
-            edge const& e = g.edges()[var.id];
-            if (e.from != e.to)
-            {
-                ++remaining[e.from];
-                ++remaining[e.to];
-            }
-        }
-    }
+    // (A valid ordering lists every edge, so these are the loop-free degrees.)
+    std::vector<std::size_t> const degree = g.loop_free_degrees();
+    std::vector<std::uint32_t> remaining(degree.begin(), degree.end());
     std::vector<char> is_terminal(n, 0);
     for (std::size_t t : g.terminals())
         is_terminal[t] = 1;
@@ -142,7 +152,7 @@ frontier_plan::frontier_plan(
                 edge const& e = g.edges()[eid];
                 if (e.from == e.to || edge_level[eid] <= level)
                     continue; // self-loop or already processed
-                std::size_t const w = (e.from == v) ? e.to : e.from;
+                std::size_t const w = e.other(v);
                 if (on_front[w] && position[w] > i)
                     inner_edges_.emplace_back(
                         static_cast<std::uint8_t>(i),
@@ -308,7 +318,6 @@ bool frontier_plan::can_still_connect(
 
 outcome frontier_plan::finish(
     step const& s,
-    std::size_t level,
     std::uint64_t kmask,
     std::uint8_t* codes,
     std::size_t f,
@@ -449,9 +458,7 @@ outcome frontier_plan::finish(
         return terminal_blocks == 1 ? outcome::success : outcome::failure;
     }
 
-    (void)level;
-    std::memcpy(out, &canonical_kmask, 8);
-    std::memcpy(out + 8, codes, n);
+    store_key(out, canonical_kmask, codes, n);
     return outcome::state;
 }
 
@@ -462,11 +469,10 @@ expansion frontier_plan::expand(
     std::uint8_t* high_key
 ) const
 {
-    step const& s       = steps_[level];
-    std::size_t const f = front_size_[level];
-    std::uint64_t kmask = 0;
-    std::memcpy(&kmask, key, 8);
-    std::uint8_t const* codes = key + 8;
+    step const& s             = steps_[level];
+    std::size_t const f       = front_size_[level];
+    std::uint64_t const kmask = load_kmask(key);
+    std::uint8_t const* codes = key + kmask_bytes;
     std::uint8_t buf[max_front + 1];
     expansion r;
 
@@ -482,7 +488,7 @@ expansion frontier_plan::expand(
             }
             r.single = true;
             std::memcpy(buf, codes, f);
-            r.high = finish(s, level, kmask, buf, f, high_key);
+            r.high = finish(s, kmask, buf, f, high_key);
             return r;
         }
         std::uint8_t const blocks
@@ -493,7 +499,7 @@ expansion frontier_plan::expand(
         std::uint64_t const kmask_high
             = s.terminal ? (kmask | bit(static_cast<std::uint8_t>(blocks + 1)))
                          : kmask;
-        r.high = finish(s, level, kmask_high, buf, f + 1, high_key);
+        r.high = finish(s, kmask_high, buf, f + 1, high_key);
         if (s.forced)
         {
             r.single = true;
@@ -509,7 +515,7 @@ expansion frontier_plan::expand(
         {
             std::memcpy(buf, codes, f);
             buf[f] = 0;
-            r.low  = finish(s, level, kmask, buf, f + 1, low_key);
+            r.low  = finish(s, kmask, buf, f + 1, low_key);
         }
         return r;
     }
@@ -524,7 +530,7 @@ expansion frontier_plan::expand(
         // sense of Imai et al. 1999, Lemma 1).
         r.single = true;
         std::memcpy(buf, codes, f);
-        r.high = finish(s, level, kmask, buf, f, high_key);
+        r.high = finish(s, kmask, buf, f, high_key);
         return r;
     }
     // Works: merge the two blocks.
@@ -535,7 +541,7 @@ expansion frontier_plan::expand(
     std::uint64_t kmask_high = kmask & ~bit(cv);
     if (kmask & bit(cv))
         kmask_high |= bit(cu);
-    r.high = finish(s, level, kmask_high, buf, f, high_key);
+    r.high = finish(s, kmask_high, buf, f, high_key);
     if (s.forced)
     {
         r.single = true;
@@ -543,7 +549,7 @@ expansion frontier_plan::expand(
     }
     // Fails: nothing merges.
     std::memcpy(buf, codes, f);
-    r.low = finish(s, level, kmask, buf, f, low_key);
+    r.low = finish(s, kmask, buf, f, low_key);
     return r;
 }
 

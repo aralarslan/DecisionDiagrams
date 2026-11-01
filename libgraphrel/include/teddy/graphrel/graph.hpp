@@ -28,6 +28,18 @@ struct edge
     std::size_t to;   ///< Target vertex (0-indexed)
     double prob;      ///< Probability that the edge works
 
+    /// The endpoint opposite @p v (v itself for a self-loop).
+    std::size_t other (std::size_t v) const
+    {
+        return from == v ? to : from;
+    }
+
+    /// True for a self-loop; it never connects anything.
+    bool is_loop () const
+    {
+        return from == to;
+    }
+
     edge(std::size_t id_, std::size_t from_, std::size_t to_, double prob_) :
         id(id_),
         from(from_),
@@ -121,6 +133,12 @@ public:
 
     /// True if @p v is in K.
     bool is_terminal (std::size_t v) const;
+
+    /// True if every vertex works with probability 1.
+    bool all_vertices_perfect () const;
+
+    /// Number of non-loop edges incident to each vertex.
+    std::vector<std::size_t> loop_free_degrees () const;
 
     /// Ids of the edges incident to @p v (a self-loop listed once).
     /// @throws std::out_of_range if @p v is not a vertex

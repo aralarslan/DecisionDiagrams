@@ -345,6 +345,23 @@ BOOST_AUTO_TEST_CASE(diagram_accessors_are_checked) {
     BOOST_CHECK_THROW(d.edge_change(5, 0, 1), std::out_of_range);
 }
 
+BOOST_AUTO_TEST_CASE(edge_and_graph_helpers) {
+    graph g(3, 4);
+    g.add_edge(0, 1, 0.5);
+    g.add_edge(1, 1, 0.5); // self-loop
+    g.add_edge(1, 2, 0.5);
+    g.add_edge(0, 1, 0.5); // parallel edge
+    BOOST_TEST(g.edges()[0].other(0) == 1u);
+    BOOST_TEST(g.edges()[0].other(1) == 0u);
+    BOOST_TEST(g.edges()[1].other(1) == 1u);
+    BOOST_TEST(g.edges()[1].is_loop());
+    BOOST_TEST(!g.edges()[2].is_loop());
+    BOOST_TEST((g.loop_free_degrees() == std::vector<std::size_t>{2, 3, 1}));
+    BOOST_TEST(g.all_vertices_perfect());
+    g.set_vertex_prob(2, 0.99);
+    BOOST_TEST(!g.all_vertices_perfect());
+}
+
 // The one-argument ordering uses the library default, cut-width.
 BOOST_AUTO_TEST_CASE(default_ordering_is_cutwidth) {
     const graph g = mesh(4, 12, 0.9);

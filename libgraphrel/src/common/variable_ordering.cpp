@@ -56,18 +56,10 @@ public:
         order_(order),
         emitted_vertex_(g.num_vertices(), 0),
         emitted_edge_(g.num_edges(), 0),
-        remaining_(g.num_vertices(), 0),
+        remaining_(g.loop_free_degrees()),
         emitted_at_(g.num_vertices(), 0)
     {
         ordering_.reserve(g.num_vertices() + g.num_edges());
-        for (edge const& e : g.edges())
-        {
-            if (e.from != e.to)
-            {
-                ++remaining_[e.from];
-                ++remaining_[e.to];
-            }
-        }
     }
 
     bool emitted (std::size_t v) const
@@ -92,7 +84,7 @@ public:
         {
             if (emitted_edge_[eid])
                 continue;
-            if (emitted_vertex_[neighbor_of(eid, v)])
+            if (emitted_vertex_[g_.edges()[eid].other(v)])
             { // includes self-loops
                 ready_.push_back(eid);
                 emitted_edge_[eid] = 1;
@@ -105,8 +97,8 @@ public:
                 ready_.end(),
                 [&] (std::size_t a, std::size_t b)
                 {
-                    std::size_t const ua = neighbor_of(a, v),
-                                      ub = neighbor_of(b, v);
+                    std::size_t const ua = g_.edges()[a].other(v),
+                                      ub = g_.edges()[b].other(v);
                     if (remaining_[ua] != remaining_[ub])
                         return remaining_[ua] < remaining_[ub];
                     return emitted_at_[ua] > emitted_at_[ub];
@@ -131,12 +123,6 @@ public:
     }
 
 private:
-    std::size_t neighbor_of (std::size_t eid, std::size_t v) const
-    {
-        edge const& e = g_.edges()[eid];
-        return (e.from == v) ? e.to : e.from;
-    }
-
     graph const& g_;
     edge_order order_;
     std::vector<char> emitted_vertex_;
@@ -149,12 +135,6 @@ private:
     std::vector<std::size_t> ready_;
     std::vector<variable> ordering_;
 };
-
-std::size_t neighbor (graph const& g, std::size_t eid, std::size_t v)
-{
-    edge const& e = g.edges()[eid];
-    return (e.from == v) ? e.to : e.from;
-}
 
 std::vector<variable> bfs_ordering (graph const& g)
 {
@@ -172,7 +152,7 @@ std::vector<variable> bfs_ordering (graph const& g)
             q.pop();
             for (std::size_t eid : g.get_incident_edges(v))
             {
-                std::size_t const nb = neighbor(g, eid, v);
+                std::size_t const nb = g.edges()[eid].other(v);
                 if (! queued[nb])
                 {
                     queued[nb] = 1;
@@ -212,7 +192,7 @@ std::vector<variable> dfs_ordering (graph const& g)
                 continue;
             }
             std::size_t const nb
-                = neighbor(g, g.get_incident_edges(v)[next++], v);
+                = g.edges()[g.get_incident_edges(v)[next++]].other(v);
             if (! out.emitted(nb))
             {
                 out.emit_vertex(nb);
@@ -238,11 +218,6 @@ std::vector<variable> dfs_ordering (graph const& g)
 // BFS sweeps diagonally (cut 18, 387,481 states); a cut-width order sweeps
 // row by row (cut 11, F = 11 for both). See libgraphrel/audit/HANDOFF.md.
 
-std::size_t non_loop_neighbor (graph const& g, std::size_t eid, std::size_t v)
-{
-    return neighbor(g, eid, v);
-}
-
 /// Greedy vertex sequence: repeatedly take the reached vertex whose addition
 /// grows the edge cut least (deg(v) - 2 * processed_neighbours(v)), preferring
 /// the most recently touched vertex (continue the current line), then the
@@ -255,11 +230,9 @@ std::vector<std::size_t> greedy_cut_sequence (
 {
     constexpr std::size_t none = std::numeric_limits<std::size_t>::max();
     std::size_t const n        = g.num_vertices();
-    std::vector<long long> deg(n, 0), processed_nb(n, 0), touched(n, -1);
-    for (std::size_t v = 0; v < n; ++v)
-        for (std::size_t eid : g.get_incident_edges(v))
-            if (g.edges()[eid].from != g.edges()[eid].to)
-                ++deg[v];
+    std::vector<std::size_t> const degree = g.loop_free_degrees();
+    std::vector<long long> deg(degree.begin(), degree.end());
+    std::vector<long long> processed_nb(n, 0), touched(n, -1);
 
     // Min-heap on (cut growth, -touch time, id) with lazy invalidation.
     struct entry
@@ -288,7 +261,7 @@ std::vector<std::size_t> greedy_cut_sequence (
         ++clock;
         for (std::size_t eid : g.get_incident_edges(v))
         {
-            std::size_t const o = non_loop_neighbor(g, eid, v);
+            std::size_t const o = g.edges()[eid].other(v);
             if (o == v || done[o])
                 continue;
             ++processed_nb[o];
@@ -347,11 +320,7 @@ cut_profile profile_of (
 )
 {
     std::vector<char> done(g.num_vertices(), 0);
-    std::vector<std::size_t> open_edges(g.num_vertices(), 0);
-    for (std::size_t v = 0; v < g.num_vertices(); ++v)
-        for (std::size_t eid : g.get_incident_edges(v))
-            if (g.edges()[eid].from != g.edges()[eid].to)
-                ++open_edges[v];
+    std::vector<std::size_t> open_edges = g.loop_free_degrees();
     cut_profile p;
     std::size_t cut = 0, front = 0;
     for (std::size_t v : sequence)
@@ -359,7 +328,7 @@ cut_profile profile_of (
         done[v] = 1;
         for (std::size_t eid : g.get_incident_edges(v))
         {
-            std::size_t const o = non_loop_neighbor(g, eid, v);
+            std::size_t const o = g.edges()[eid].other(v);
             if (o == v)
                 continue;
             if (done[o])
@@ -406,18 +375,10 @@ double perfect_vertex_work (
     std::vector<variable> const& ordering
 )
 {
-    constexpr double a = 1.6;
-    std::vector<std::size_t> remaining(g.num_vertices(), 0);
-    for (edge const& e : g.edges())
-    {
-        if (e.from != e.to)
-        {
-            ++remaining[e.from];
-            ++remaining[e.to];
-        }
-    }
-    std::size_t front = 0;
-    double work       = 0.0;
+    constexpr double a                 = 1.6;
+    std::vector<std::size_t> remaining = g.loop_free_degrees();
+    std::size_t front                  = 0;
+    double work                        = 0.0;
     for (variable const& var : ordering)
     {
         work += std::exp2(a * static_cast<double>(front));
@@ -428,7 +389,7 @@ double perfect_vertex_work (
         else
         {
             edge const& e = g.edges()[var.id];
-            if (e.from != e.to)
+            if (! e.is_loop())
             {
                 front -= --remaining[e.from] == 0;
                 front -= --remaining[e.to] == 0;
@@ -465,7 +426,7 @@ std::vector<variable> cutwidth_ordering (graph const& g)
     std::size_t forced = 0;
     for (std::size_t eid : g.get_incident_edges(seed))
     {
-        std::size_t const nb = neighbor(g, eid, seed);
+        std::size_t const nb = g.edges()[eid].other(seed);
         if (nb == seed || tried[nb] || forced == max_forced_starts)
             continue;
         tried[nb] = 1;
@@ -481,12 +442,8 @@ std::vector<variable> cutwidth_ordering (graph const& g)
     // diagonals has the same widest layer, but the diagonal sweep is only
     // wide in the middle: 10x10, 2.9 M vs 8.4 M states in total), so the
     // estimated total work decides. The first candidate wins ties.
-    bool const perfect_vertices = std::all_of(
-        g.vertex_probs().begin(),
-        g.vertex_probs().end(),
-        [] (double p) { return p >= 1.0; }
-    );
-    std::size_t best = 0;
+    bool const perfect_vertices = g.all_vertices_perfect();
+    std::size_t best            = 0;
     if (perfect_vertices)
     {
         double best_work = 0.0;

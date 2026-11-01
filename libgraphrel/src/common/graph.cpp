@@ -129,9 +129,32 @@ std::vector<std::size_t> graph::get_neighbors(std::size_t v) const
     for (std::size_t edge_id : incident)
     {
         edge const& e = edges_[edge_id];
-        neighbors.push_back((e.from == v) ? e.to : e.from);
+        neighbors.push_back(e.other(v));
     }
     return neighbors;
+}
+
+bool graph::all_vertices_perfect() const
+{
+    return std::all_of(
+        vertex_probs_.begin(),
+        vertex_probs_.end(),
+        [] (double p) { return p >= 1.0; }
+    );
+}
+
+std::vector<std::size_t> graph::loop_free_degrees() const
+{
+    std::vector<std::size_t> degree(num_vertices(), 0);
+    for (edge const& e : edges_)
+    {
+        if (! e.is_loop())
+        {
+            ++degree[e.from];
+            ++degree[e.to];
+        }
+    }
+    return degree;
 }
 
 bool graph::validate() const

@@ -69,16 +69,6 @@ namespace
 
 using bdd_t = teddy::bss_manager::diagram_t;
 
-bool has_imperfect_vertices (graph const& g)
-{
-    for (double rel : g.vertex_probs())
-    {
-        if (rel < 1.0)
-            return true;
-    }
-    return false;
-}
-
 teddy::int32 count_bdd_variables (
     std::vector<variable> const& ordering,
     bool has_imperfect
@@ -108,7 +98,7 @@ public:
         mgr_(mgr),
         edge_to_var_(g.num_edges(), -1),
         vertex_to_var_(g.num_vertices(), -1),
-        has_imperfect_(has_imperfect_vertices(g))
+        has_imperfect_(! g.all_vertices_perfect())
     {
         init_variable_index_mappings();
     }
@@ -156,7 +146,7 @@ public:
         current.reset(plan.key_size(0), 1);
         std::vector<std::uint8_t> const initial = plan.initial_key();
         current.add(initial.data(), 0.0);
-        std::vector<std::uint8_t> low(8 + detail::frontier_plan::max_front);
+        std::vector<std::uint8_t> low(detail::frontier_plan::max_key_size);
         std::vector<std::uint8_t> high(low.size());
 
         auto target
@@ -281,7 +271,7 @@ reliability_diagram build_diagram (graph const& g, teddy::int64 pool_size)
 {
     detail::require_valid(g, "build_diagram");
     auto ordering = generate_variable_ordering(g, ordering_strategy::cutwidth);
-    bool const has_imperfect = has_imperfect_vertices(g);
+    bool const has_imperfect = ! g.all_vertices_perfect();
     teddy::int32 var_count   = count_bdd_variables(ordering, has_imperfect);
 
     teddy::bss_manager mgr(var_count, pool_size);

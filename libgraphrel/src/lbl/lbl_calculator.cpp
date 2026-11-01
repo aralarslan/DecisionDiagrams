@@ -355,8 +355,8 @@ double lbl_calculator::calculate()
         auto expand_block = [&] (std::size_t b, auto&& emit)
         {
             block_sums& sum = sums[b];
-            std::uint8_t low[8 + detail::frontier_plan::max_front];
-            std::uint8_t high[8 + detail::frontier_plan::max_front];
+            std::uint8_t low[detail::frontier_plan::max_key_size];
+            std::uint8_t high[detail::frontier_plan::max_key_size];
             std::uint64_t position
                 = 2 * static_cast<std::uint64_t>(b * block_size_);
             auto route = [&] (
